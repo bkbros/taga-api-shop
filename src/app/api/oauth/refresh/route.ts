@@ -9,8 +9,8 @@ export async function GET() {
   const data = new URLSearchParams({
     grant_type: "refresh_token",
     refresh_token,
-    client_id: process.env.CAFE24_CLIENT_ID!,
-    client_secret: process.env.CAFE24_CLIENT_SECRET!,
+    client_id: process.env.NEXT_PUBLIC_CAFE24_CLIENT_ID!,
+    client_secret: process.env.NEXT_PUBLIC_CAFE24_CLIENT_SECRET!,
   });
 
   const { data: tokens } = await axios.post(`https://${mall}.cafe24api.com/api/v2/oauth/token`, data.toString(), {
