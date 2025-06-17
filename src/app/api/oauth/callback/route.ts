@@ -12,7 +12,7 @@ export async function GET(req: Request) {
     grant_type: "authorization_code",
     code,
     client_id: process.env.NEXT_PUBLIC_CAFE24_CLIENT_ID!,
-    client_secret: process.env.NEXT_PUBLIC_CAFE24_CLIENT_SECRET!,
+    client_secret: process.env.CAFE24_CLIENT_SECRET!,
     redirect_uri: `${process.env.NEXT_PUBLIC_BASE_URL}/api/oauth/callback`,
   });
 
