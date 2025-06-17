@@ -36,18 +36,6 @@ export default function HomePage() {
       // 배송
       "mall.read_shipping",
       "mall.write_shipping",
-
-      // 추가 권한들
-      "mall.read_notification",
-      "mall.write_notification",
-      "mall.read_store",
-      "mall.write_store",
-      "mall.read_design",
-      "mall.write_design",
-      "mall.read_salesreport",
-      "mall.read_mileage",
-      "mall.write_mileage",
-      "mall.read_translation",
     ];
 
     // OAuth URL 생성 시
