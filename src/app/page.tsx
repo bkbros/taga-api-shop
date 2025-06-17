@@ -3,7 +3,7 @@ export default function HomePage() {
   const handleConnect = () => {
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
     const clientId = process.env.NEXT_PUBLIC_CAFE24_CLIENT_ID!;
-    const redirectUri = encodeURIComponent(`${process.env.NEXT_PUBLIC_BASE_URL}/oauth/callback`);
+    const redirectUri = encodeURIComponent(`${process.env.NEXT_PUBLIC_BASE_URL}/api/oauth/callback`);
     const scopes = [
       // 앱 권한
       "mall.read_application",
