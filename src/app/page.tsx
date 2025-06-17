@@ -1,7 +1,5 @@
 "use client";
-import { useRouter } from "next/navigation";
 export default function HomePage() {
-  const router = useRouter();
   const handleConnect = () => {
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
     const clientId = process.env.NEXT_PUBLIC_CAFE24_CLIENT_ID!;
