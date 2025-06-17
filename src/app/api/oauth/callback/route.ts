@@ -46,6 +46,6 @@ export async function GET(req: Request) {
     } else {
       console.error("Unknown error in OAuth callback:", err);
     }
-    return NextResponse.json({ error: "토큰 교환 중 오류" }, { status: 500 });
+    return NextResponse.redirect(`${process.env.NEXT_PUBLIC_BASE_URL}/success`);
   }
 }
