@@ -3,8 +3,14 @@
 
 import { useState } from "react";
 
+interface Product {
+  product_id: string;
+  product_name: string;
+  price: number;
+}
+
 export default function SuccessPage() {
-  const [data, setData] = useState<any[] | null>(null);
+  const [data, setData] = useState<Product[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -18,9 +24,13 @@ export default function SuccessPage() {
         throw new Error(text || "API 호출 실패");
       }
       const json = await res.json();
-      setData(Array.isArray(json) ? json : json.products || []);
-    } catch (e: any) {
-      setError(e.message);
+      // json 구조에 맞게 타입 단언
+      const products = (json.products ?? json) as Product[];
+      setData(products);
+    } catch (err: unknown) {
+      // unknown → Error 로 좁혀서 처리
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
     } finally {
       setLoading(false);
     }
