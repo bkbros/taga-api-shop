@@ -13,6 +13,13 @@ export default function SuccessPage() {
   const [data, setData] = useState<Product[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string>();
+
+  const handleSync = async () => {
+    const res = await fetch("/api/trigger-sync");
+    const json = await res.json();
+    setMsg(res.ok ? `업데이트 ${json.updated}개 완료` : `오류: ${json.error}`);
+  };
 
   const handleTestApi = async () => {
     setLoading(true);
@@ -40,6 +47,8 @@ export default function SuccessPage() {
     <main className="flex flex-col items-center justify-center min-h-screen p-10">
       <h1 className="text-2xl font-bold mb-4">연결이 완료되었습니다!</h1>
       <p className="text-gray-700 mb-6">카페24 관리자 API 연동이 성공적으로 설정되었습니다.</p>
+      <button onClick={handleSync}>스프레드시트 동기화</button>
+      {msg && <p>{msg}</p>}
       <button
         onClick={handleTestApi}
         className="mb-4 px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600"
