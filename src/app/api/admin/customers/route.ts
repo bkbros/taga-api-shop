@@ -4,6 +4,7 @@ import axios, { AxiosError } from "axios";
 import { loadParams } from "@/lib/ssm";
 
 export async function GET(request: Request) {
+  console.log("▶ Incoming URL:", request.url);
   try {
     // 1) SSM에서 토큰 불러오기
     const { access_token } = await loadParams(["access_token"]);
@@ -25,7 +26,7 @@ export async function GET(request: Request) {
         "X-Cafe24-Api-Version": apiVer,
       },
     });
-
+    console.log("▶ response:", response);
     const exists = Array.isArray(response.data.customers) && response.data.customers.length > 0;
     return NextResponse.json({ exists });
   } catch (error) {
