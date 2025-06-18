@@ -17,7 +17,7 @@ export async function GET(request: Request) {
 
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
     const apiVer = process.env.CAFE24_API_VERSION!;
-    const userId = "sda0125";
+
     // 3) Admin API 호출
     const response = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
       headers: {
