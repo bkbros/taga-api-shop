@@ -20,7 +20,7 @@ export async function GET(request: Request) {
     const userId = "sda0125";
     // 3) Admin API 호출
     const response = await axios.get(
-      `https://${mallId}.cafe24api.com/api/v2/admin/customers=${encodeURIComponent(userId)}`,
+      `https://${mallId}.cafe24api.com/api/v2/admin/customers?member_id=${encodeURIComponent(userId)}`,
       {
         headers: {
           Authorization: `Bearer ${access_token}`,
