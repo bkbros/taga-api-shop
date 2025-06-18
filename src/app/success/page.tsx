@@ -15,9 +15,9 @@ export default function SuccessPage() {
   const [error, setError] = useState<string | null>(null);
   const [msg, setMsg] = useState<string>();
   const [didi, setDidi] = useState<string>();
-  const userId = "sda0125";
+
   const calldidi = async () => {
-    const res = await fetch(`/api/admin/customers?member_id=${encodeURIComponent(userId)}`);
+    const res = await fetch(`/api/admin/customers`);
     // ② JSON 을 읽고
     const json = await res.json();
 
