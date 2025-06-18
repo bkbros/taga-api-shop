@@ -19,15 +19,12 @@ export async function GET(request: Request) {
     const apiVer = process.env.CAFE24_API_VERSION!;
     const userId = "sda0125";
     // 3) Admin API 호출
-    const response = await axios.get(
-      `https://${mallId}.cafe24api.com/api/v2/admin/customers?member_id=${encodeURIComponent(userId)}`,
-      {
-        headers: {
-          Authorization: `Bearer ${access_token}`,
-          "X-Cafe24-Api-Version": apiVer,
-        },
+    const response = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
+      headers: {
+        Authorization: `Bearer ${access_token}`,
+        "X-Cafe24-Api-Version": apiVer,
       },
-    );
+    });
 
     const exists = Array.isArray(response.data.customers) && response.data.customers.length > 0;
     return NextResponse.json({ exists });
