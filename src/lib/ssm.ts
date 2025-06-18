@@ -1,5 +1,5 @@
 // src/lib/ssm.ts
-import { SSMClient, PutParameterCommand, GetParametersCommand } from "@aws-sdk/client-ssm";
+import { SSMClient, PutParameterCommand, GetParameterCommand } from "@aws-sdk/client-ssm";
 
 const client = new SSMClient({
   region: process.env.AWS_REGION!,
@@ -27,22 +27,23 @@ export async function saveParam(name: string, value: string): Promise<void> {
 }
 
 export async function loadParams(names: string[]): Promise<Record<string, string>> {
-  try {
-    const resp = await client.send(
-      new GetParametersCommand({
-        Names: names.map(n => `/cafe24/${n}`),
-        WithDecryption: true,
-      }),
-    );
-    const result: Record<string, string> = {};
-    (resp.Parameters ?? []).forEach(p => {
-      const key = p.Name!.split("/").pop()!;
-      result[key] = p.Value!;
-    });
-    console.log("✅ Loaded SSM parameters:", Object.keys(result));
-    return result;
-  } catch (e) {
-    console.error("❌ Failed to load SSM parameters", names, e);
-    throw e;
-  }
+  const result: Record<string, string> = {};
+  await Promise.all(
+    names.map(async n => {
+      try {
+        const resp = await client.send(
+          new GetParameterCommand({
+            Name: `/cafe24/${n}`,
+            WithDecryption: true,
+          }),
+        );
+        result[n] = resp.Parameter!.Value!;
+        console.log(`✅ Loaded SSM parameter /cafe24/${n}`);
+      } catch (e) {
+        console.error(`❌ Failed to load SSM parameter /cafe24/${n}`, e);
+        throw e;
+      }
+    }),
+  );
+  return result;
 }
