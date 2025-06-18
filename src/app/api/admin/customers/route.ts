@@ -10,7 +10,7 @@ export async function GET() {
 
     // 2) API 호출
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
-    const res = await axios.get(`https://${mallId}.cafe24api.com/api/v2//admin/customers?member_id=sda0125`, {
+    const res = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers?member_id=sda0125`, {
       headers: {
         Authorization: `Bearer ${access_token}`,
       },
