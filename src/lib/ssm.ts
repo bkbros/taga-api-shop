@@ -1,5 +1,5 @@
 // src/lib/ssm.ts
-import { SSMClient, PutParameterCommand, GetParametersCommand, GetParameterCommand } from "@aws-sdk/client-ssm";
+import { SSMClient, PutParameterCommand, GetParametersCommand } from "@aws-sdk/client-ssm";
 
 const client = new SSMClient({
   region: process.env.AWS_REGION!,
