@@ -17,7 +17,7 @@ export default function SuccessPage() {
   const [didi, setDidi] = useState<string>();
 
   const calldidi = async () => {
-    const res = await fetch("/api/admin/customers?member_id=sda0125");
+    const res = await fetch("/api/admin/customers");
     // ② JSON 을 읽고
     const json = await res.json();
 
@@ -61,7 +61,7 @@ export default function SuccessPage() {
     <main className="flex flex-col items-center justify-center min-h-screen p-10">
       <h1 className="text-2xl font-bold mb-4">연결이 완료되었습니다!</h1>
       <p className="text-gray-700 mb-6">카페24 관리자 API 연동이 성공적으로 설정되었습니다.</p>
-      <button onClick={calldidi} className="px-4 py-2 bg-blue-500 text-white rounded">
+      <button onClick={calldidi} className="mb-4 px-4 py-2 bg-blue-500 text-white rounded">
         회원 조회 테스트
       </button>
       {didi && <p className="mt-4">{didi}</p>}
