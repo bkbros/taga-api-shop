@@ -1,6 +1,7 @@
 // src/app/api/oauth/callback/route.ts
 import { NextResponse } from "next/server";
 import axios from "axios";
+import { saveParam } from "@/lib/ssm";
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -35,8 +36,8 @@ export async function GET(req: Request) {
     );
 
     // 토큰 저장 로직…
-    // await saveParam("access_token", tokenRes.data.access_token);
-    // await saveParam("refresh_token", tokenRes.data.refresh_token);
+    await saveParam("access_token", tokenRes.data.access_token);
+    await saveParam("refresh_token", tokenRes.data.refresh_token);
 
     return NextResponse.json(tokenRes.data);
   } catch (err: unknown) {
