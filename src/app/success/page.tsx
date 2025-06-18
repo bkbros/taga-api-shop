@@ -47,7 +47,9 @@ export default function SuccessPage() {
     <main className="flex flex-col items-center justify-center min-h-screen p-10">
       <h1 className="text-2xl font-bold mb-4">연결이 완료되었습니다!</h1>
       <p className="text-gray-700 mb-6">카페24 관리자 API 연동이 성공적으로 설정되었습니다.</p>
-      <button onClick={handleSync}>스프레드시트 동기화</button>
+      <button onClick={handleSync} className="mb-4 px-4 py-2 bg-gray-500 text-white rounded hover:bg-gray-600">
+        스프레드시트 동기화
+      </button>
       {msg && <p>{msg}</p>}
       <button
         onClick={handleTestApi}
