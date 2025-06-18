@@ -1,24 +1,25 @@
 // src/app/api/admin/customers/route.ts
 import { NextResponse } from "next/server";
-import axios from "axios";
+import axios, { AxiosError } from "axios";
 import { loadParams } from "@/lib/ssm";
 
 export async function GET(request: Request) {
-  // 1) SSM에서 토큰 꺼내오기
-  const { access_token } = await loadParams(["access_token"]);
-
-  // 2) 쿼리에서 member_id 받아오기
-  const { searchParams } = new URL(request.url);
-  const memberId = searchParams.get("member_id");
-  if (!memberId) {
-    return NextResponse.json({ error: "member_id가 필요합니다" }, { status: 400 });
-  }
-
-  const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
-
   try {
-    // 3) params 객체로 정확히 전달
-    const res = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
+    // 1) SSM에서 토큰 불러오기
+    const { access_token } = await loadParams(["access_token"]);
+
+    // 2) 쿼리 파라미터에서 member_id 받아오기
+    const { searchParams } = new URL(request.url);
+    const memberId = searchParams.get("member_id");
+    if (!memberId) {
+      return NextResponse.json({ error: "member_id 파라미터가 필요합니다" }, { status: 400 });
+    }
+
+    const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
+    const apiVer = process.env.CAFE24_API_VERSION!;
+
+    // 3) Admin API 호출
+    const response = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
       params: {
         search_type: "member_id",
         keyword: memberId,
@@ -27,14 +28,21 @@ export async function GET(request: Request) {
       },
       headers: {
         Authorization: `Bearer ${access_token}`,
+        "X-Cafe24-Api-Version": apiVer,
       },
     });
 
-    // 4) 결과 리턴
-    const exists = (res.data.customers?.length ?? 0) > 0;
+    const exists = Array.isArray(response.data.customers) && response.data.customers.length > 0;
     return NextResponse.json({ exists });
-  } catch (err: any) {
-    console.error("Customer lookup error:", err.response?.data || err.message);
-    return NextResponse.json({ error: "조회 실패" }, { status: 500 });
+  } catch (error) {
+    // AxiosError 타입으로 좁혀서 처리
+    if (error instanceof AxiosError) {
+      console.error("Customer lookup AxiosError:", error.response?.data || error.message);
+    } else if (error instanceof Error) {
+      console.error("Customer lookup Error:", error.message);
+    } else {
+      console.error("Unknown error:", error);
+    }
+    return NextResponse.json({ error: "회원 조회 중 오류가 발생했습니다" }, { status: 500 });
   }
 }
