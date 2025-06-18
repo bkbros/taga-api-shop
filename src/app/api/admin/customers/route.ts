@@ -10,7 +10,13 @@ export async function GET() {
 
     // 2) API 호출
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
-    const res = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers?member_id=sda0125`, {
+    const res = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
+      params: {
+        search_type: "member_id", // ‘member_id’로 검색하겠다
+        keyword: "sda0125", // 실제 회원 아이디
+        limit: 1, // 최대 1건
+        shop_no: 1, // 샵 번호 (보통 1)
+      },
       headers: {
         Authorization: `Bearer ${access_token}`,
       },
