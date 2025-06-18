@@ -14,6 +14,20 @@ export default function SuccessPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [msg, setMsg] = useState<string>();
+  const [didi, setDidi] = useState<string>();
+
+  const calldidi = async () => {
+    const res = await fetch("/api/admin/customers?member_id=sda0125");
+    // ② JSON 을 읽고
+    const json = await res.json();
+
+    // ③ exists 프로퍼티를 보고 메시지를 정리하세요.
+    if (res.ok) {
+      setDidi(json.exists ? "✅ 회원이 존재합니다" : "❌ 해당 회원이 없습니다");
+    } else {
+      setDidi(`오류: ${json.error}`);
+    }
+  };
 
   const handleSync = async () => {
     const res = await fetch("/api/trigger-sync");
@@ -47,6 +61,10 @@ export default function SuccessPage() {
     <main className="flex flex-col items-center justify-center min-h-screen p-10">
       <h1 className="text-2xl font-bold mb-4">연결이 완료되었습니다!</h1>
       <p className="text-gray-700 mb-6">카페24 관리자 API 연동이 성공적으로 설정되었습니다.</p>
+      <button onClick={calldidi} className="px-4 py-2 bg-blue-500 text-white rounded">
+        회원 조회 테스트
+      </button>
+      {didi && <p className="mt-4">{didi}</p>}
       <button onClick={handleSync} className="mb-4 px-4 py-2 bg-gray-500 text-white rounded hover:bg-gray-600">
         스프레드시트 동기화
       </button>
