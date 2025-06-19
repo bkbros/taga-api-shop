@@ -12,7 +12,7 @@ export async function GET(request: Request) {
 
     // 파라미터
 
-    const memberId = "sda0125";
+    const memberId = "4239761550@k";
 
     if (!memberId) {
       return NextResponse.json({ error: "member_id 파라미터가 필요합니다" }, { status: 400 });
