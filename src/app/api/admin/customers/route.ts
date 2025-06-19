@@ -11,24 +11,22 @@ export async function GET(request: Request) {
     console.log("▶ access_token:", access_token?.slice(0, 10), "…");
 
     // 파라미터
-    const { searchParams } = new URL(request.url);
-    const memberId = searchParams.get("member_id");
-    console.log("▶ member_id:", memberId);
+
+    const memberId = "sda0125";
 
     if (!memberId) {
       return NextResponse.json({ error: "member_id 파라미터가 필요합니다" }, { status: 400 });
     }
 
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
-    const apiVer = process.env.CAFE24_API_VERSION!;
-    console.log("▶ mallId, apiVer:", mallId, apiVer);
+
+    console.log("▶ mallId, apiVer:", mallId);
 
     // 호출
     const resp = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
       params: { member_id: memberId },
       headers: {
         Authorization: `Bearer ${access_token}`,
-        "X-Cafe24-Api-Version": apiVer,
       },
     });
     console.log("▶ API response:", resp.status, resp.data);
