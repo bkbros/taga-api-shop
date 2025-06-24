@@ -60,7 +60,7 @@ import { SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
 export async function GET() {
   try {
     const client = new SFNClient({ region: process.env.AWS_REGION });
-    const stateMachineArn = process.env.SYNC_CUSTOMERS_STATE_MACHINE_ARN!;
+    const stateMachineArn = process.env.STATE_MACHINE_ARN!;
     const name = `sync-cafe24-${Date.now()}`; // 실행마다 유니크하게
     const command = new StartExecutionCommand({
       stateMachineArn,
