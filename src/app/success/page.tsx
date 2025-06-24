@@ -30,12 +30,21 @@ export default function SuccessPage() {
   };
 
   const handleSync = async () => {
-    const res = await fetch("/api/trigger-sync");
-    const json = await res.json();
-    if (res.ok && json.started) {
-      setMsg("동기화가 시작되었습니다 🎉");
-    } else {
-      setMsg(`오류: ${json.error || "상태 머신 실행 실패"}`);
+    setError(null);
+    setMsg(undefined);
+    try {
+      const res = await fetch("/api/trigger-sync");
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "동기화 실패");
+      // next_start 가 null 이면 끝까지 다 돌린 것
+      if (json.next_start === null) {
+        setMsg(`동기화 완료되었습니다! 총 ${json.updated}개 업데이트`);
+      } else {
+        setMsg(`업데이트 ${json.updated}개 완료… 다음 배치 진행 중`);
+      }
+    } catch (err: unknown) {
+      const m = err instanceof Error ? err.message : String(err);
+      setError(m);
     }
   };
 
