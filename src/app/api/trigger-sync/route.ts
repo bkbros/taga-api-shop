@@ -31,23 +31,49 @@
 // }
 
 // src/app/api/trigger-sync/route.ts
+
+//--------------------------2차수정--------------------------------------//
+// import { NextResponse } from "next/server";
+// import { SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
+
+// const sfn = new SFNClient({ region: process.env.AWS_REGION });
+// const SM_ARN = process.env.STATE_MACHINE_ARN!; // Vercel env 설정에 추가
+
+// export async function GET() {
+//   try {
+//     await sfn.send(
+//       new StartExecutionCommand({
+//         stateMachineArn: SM_ARN,
+//         input: "{}",
+//       }),
+//     );
+//     return NextResponse.json({ message: "동기화 시작됨" });
+//   } catch (e) {
+//     console.error(e);
+//     return NextResponse.json({ error: "동기화 실패" }, { status: 500 });
+//   }
+// }
+// src/app/api/trigger-sync/route.ts
 import { NextResponse } from "next/server";
 import { SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
 
-const sfn = new SFNClient({ region: process.env.AWS_REGION });
-const SM_ARN = process.env.STATE_MACHINE_ARN!; // Vercel env 설정에 추가
-
 export async function GET() {
   try {
-    await sfn.send(
-      new StartExecutionCommand({
-        stateMachineArn: SM_ARN,
-        input: "{}",
-      }),
-    );
-    return NextResponse.json({ message: "동기화 시작됨" });
-  } catch (e) {
-    console.error(e);
-    return NextResponse.json({ error: "동기화 실패" }, { status: 500 });
+    const client = new SFNClient({ region: process.env.AWS_REGION });
+    const stateMachineArn = process.env.SYNC_CUSTOMERS_STATE_MACHINE_ARN!;
+    const name = `sync-cafe24-${Date.now()}`; // 실행마다 유니크하게
+    const command = new StartExecutionCommand({
+      stateMachineArn,
+      name,
+      input: JSON.stringify({}), // 필요하다면 파라미터 추가
+    });
+    const res = await client.send(command);
+    return NextResponse.json({
+      started: true,
+      executionArn: res.executionArn,
+    });
+  } catch (err) {
+    console.error("trigger-sync error:", err);
+    return NextResponse.json({ error: (err as Error).message }, { status: 500 });
   }
 }

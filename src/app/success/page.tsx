@@ -32,7 +32,11 @@ export default function SuccessPage() {
   const handleSync = async () => {
     const res = await fetch("/api/trigger-sync");
     const json = await res.json();
-    setMsg(res.ok ? `업데이트 ${json.updated}개 완료` : `오류: ${json.error}`);
+    if (res.ok && json.started) {
+      setMsg("동기화가 시작되었습니다 🎉");
+    } else {
+      setMsg(`오류: ${json.error || "상태 머신 실행 실패"}`);
+    }
   };
 
   const handleTestApi = async () => {
