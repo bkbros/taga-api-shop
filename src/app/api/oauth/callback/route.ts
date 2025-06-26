@@ -51,7 +51,6 @@
 //   }
 // }
 // src/app/api/oauth/callback/route.ts
-// src/app/api/oauth/callback/route.ts
 import { NextResponse } from "next/server";
 import axios from "axios";
 import { saveParam } from "@/lib/ssm";
@@ -64,7 +63,7 @@ export async function GET(req: Request) {
   }
 
   try {
-    // 1) 올바른 env 이름 사용
+    // ← 서버 전용 env 변수 사용
     const mallId = process.env.CAFE24_MALL_ID!;
     const clientId = process.env.CAFE24_CLIENT_ID!;
     const clientSecret = process.env.CAFE24_CLIENT_SECRET!;
@@ -72,7 +71,6 @@ export async function GET(req: Request) {
 
     const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
 
-    // 2) 토큰 발급 요청
     const tokenRes = await axios.post(
       `https://${mallId}.cafe24api.com/api/v2/oauth/token`,
       new URLSearchParams({
@@ -88,18 +86,24 @@ export async function GET(req: Request) {
       },
     );
 
+    // 발급된 토큰과 유효기간(expires_in)을 가져옵니다.
     const { access_token, refresh_token, expires_in } = tokenRes.data;
 
-    // 3) SSM에 access/refresh 토큰과 만료 시각 저장
+    // SSM에 저장
     await saveParam("access_token", access_token);
     await saveParam("refresh_token", refresh_token);
+    // 만료 시각(Unix timestamp)도 기록
     const expiryTs = Math.floor(Date.now() / 1000) + Number(expires_in);
     await saveParam("token_expiry", expiryTs.toString());
 
-    // 4) 클라이언트로 리다이렉트
+    // 클라이언트 리다이렉트
     return NextResponse.redirect(`${process.env.NEXT_PUBLIC_BASE_URL}/success`);
   } catch (e) {
-    console.error("OAuth callback error:", e);
+    if (axios.isAxiosError(e)) {
+      console.error("Cafe24 token error status:", e);
+    } else {
+      console.error("Unknown error in OAuth callback:", e);
+    }
     return NextResponse.redirect(`${process.env.NEXT_PUBLIC_BASE_URL}/error`);
   }
 }
