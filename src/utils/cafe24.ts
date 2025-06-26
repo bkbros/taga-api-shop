@@ -37,7 +37,7 @@ cafe24Api.interceptors.response.use(
         return cafe24Api(err.config);
       }
       // 리프레시 실패 시 로그인 화면으로 이동
-      window.location.href = "/login";
+      window.location.href = "/";
     }
     return Promise.reject(err);
   },
