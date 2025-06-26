@@ -47,6 +47,6 @@ export async function GET(req: Request) {
       console.error("Unknown error in OAuth callback:", err);
     }
     // 실패해도 성공 페이지로 돌려보낼지, 에러 페이지로 보낼지 결정하세요
-    return NextResponse.redirect(`${process.env.NEXT_PUBLIC_BASE_URL}/error`);
+    return NextResponse.redirect(`${process.env.NEXT_PUBLIC_BASE_URL}`);
   }
 }
