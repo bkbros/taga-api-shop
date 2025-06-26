@@ -27,11 +27,11 @@ export async function GET(request: Request) {
 
     // 4) 완료된 경우 output 파싱
     let payload: SyncPayload = {};
-    if (typeof res.output === "string") {
+    if (typeof res.output === "string" && res.output.trim() !== "") {
       try {
         payload = JSON.parse(res.output) as SyncPayload;
       } catch (e) {
-        console.error("[sync-status] output parse error:", e, "raw:", res.output);
+        console.error("[sync-status] output parse error:", e, "raw output:", res.output);
         return NextResponse.json({ error: "실행 결과를 파싱하는 중 오류가 발생했습니다." }, { status: 500 });
       }
     }
