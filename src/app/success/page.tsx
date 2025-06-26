@@ -53,10 +53,12 @@ type SyncStatus = {
 export default function SuccessPage() {
   const [error, setError] = useState<string | null>(null);
   const [msg, setMsg] = useState<string>();
+  const [loading, setLoading] = useState<boolean>(false);
 
   const handleSync = async () => {
     setError(null);
     setMsg(undefined);
+    setLoading(true);
 
     try {
       // 1) 실행 시작
@@ -77,7 +79,7 @@ export default function SuccessPage() {
       if (json.next_start === null) {
         setMsg(`✅ 동기화 완료! 총 ${json.updated ?? 0}건 업데이트`);
       } else {
-        setMsg(`🔄 ${json.updated ?? 0}건 업데이트 완료… 계속 진행 중`);
+        setMsg(`🔄 계속 진행 중`);
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -89,8 +91,12 @@ export default function SuccessPage() {
       <h1 className="text-2xl font-bold mb-4">연결이 완료되었습니다!</h1>
       <p className="text-gray-700 mb-6">카페24 관리자 API 연동이 성공적으로 설정되었습니다.</p>
 
-      <button onClick={handleSync} className="mb-4 px-4 py-2 bg-gray-500 text-white rounded hover:bg-gray-600">
-        스프레드시트 동기화
+      <button
+        onClick={handleSync}
+        className={`mb-4 px-4 py-2 text-white rounded cursor-pointer
+          ${loading ? "bg-gray-400 cursor-not-allowed" : "bg-amber-600 hover:bg-amber-300"}`}
+      >
+        {loading ? "동기화 중..." : "스프레드시트 동기화"}
       </button>
 
       {msg && <p className="mt-4 text-green-600">{msg}</p>}
