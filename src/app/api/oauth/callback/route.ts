@@ -95,8 +95,17 @@ export async function GET(req: Request) {
     const expiryTs = Math.floor(Date.now() / 1000) + Number(expires_in);
     await saveParam("token_expiry", expiryTs.toString());
 
-    // 성공 후 리다이렉트
-    return NextResponse.redirect(`${process.env.NEXT_PUBLIC_BASE_URL}/success`);
+    // 4) 클라이언트용 HTTP-only 쿠키 설정
+    // access_token: 전체 경로
+    // refresh_token: /api/oauth/refresh 경로로만 전송
+    const cookieHeader = [
+      `access_token=${access_token}; Path=/; HttpOnly; Secure; Max-Age=${expires_in}`,
+      `refresh_token=${refresh_token}; Path=/api/oauth/refresh; HttpOnly; Secure; Max-Age=${14 * 24 * 3600}`,
+    ].join("\n");
+
+    const response = NextResponse.redirect(`${process.env.NEXT_PUBLIC_BASE_URL}/success`);
+    response.headers.set("Set-Cookie", cookieHeader);
+    return response;
   } catch (e) {
     console.error("OAuth callback error:", e);
     return NextResponse.redirect(`${process.env.NEXT_PUBLIC_BASE_URL}/error`);
