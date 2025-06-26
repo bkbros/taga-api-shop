@@ -51,6 +51,7 @@
 //   }
 // }
 // src/app/api/oauth/callback/route.ts
+// src/app/api/oauth/callback/route.ts
 import { NextResponse } from "next/server";
 import axios from "axios";
 import { saveParam } from "@/lib/ssm";
@@ -63,6 +64,7 @@ export async function GET(req: Request) {
   }
 
   try {
+    // 1) 올바른 env 이름 사용
     const mallId = process.env.CAFE24_MALL_ID!;
     const clientId = process.env.CAFE24_CLIENT_ID!;
     const clientSecret = process.env.CAFE24_CLIENT_SECRET!;
@@ -70,6 +72,7 @@ export async function GET(req: Request) {
 
     const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
 
+    // 2) 토큰 발급 요청
     const tokenRes = await axios.post(
       `https://${mallId}.cafe24api.com/api/v2/oauth/token`,
       new URLSearchParams({
@@ -87,23 +90,14 @@ export async function GET(req: Request) {
 
     const { access_token, refresh_token, expires_in } = tokenRes.data;
 
-    // 1) SSM에 저장
+    // 3) SSM에 access/refresh 토큰과 만료 시각 저장
     await saveParam("access_token", access_token);
     await saveParam("refresh_token", refresh_token);
-    // 2) 만료 시각도 SSM에 기록 (현재 시간 + expires_in 초)
     const expiryTs = Math.floor(Date.now() / 1000) + Number(expires_in);
     await saveParam("token_expiry", expiryTs.toString());
 
-    // 3) 클라이언트에도 HTTP-only 쿠키로 저장 (선택)
-    const res = NextResponse.redirect(`${process.env.NEXT_PUBLIC_BASE_URL}/success`);
-    res.headers.set(
-      "Set-Cookie",
-      [
-        `access_token=${access_token}; Path=/; HttpOnly; Secure; Max-Age=${expires_in}`,
-        `refresh_token=${refresh_token}; Path=/api/oauth/refresh; HttpOnly; Secure; Max-Age=${14 * 24 * 3600}`,
-      ].join("\n"),
-    );
-    return res;
+    // 4) 클라이언트로 리다이렉트
+    return NextResponse.redirect(`${process.env.NEXT_PUBLIC_BASE_URL}/success`);
   } catch (e) {
     console.error("OAuth callback error:", e);
     return NextResponse.redirect(`${process.env.NEXT_PUBLIC_BASE_URL}/error`);
