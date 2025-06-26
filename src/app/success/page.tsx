@@ -44,6 +44,12 @@
 
 import { useState } from "react";
 
+type SyncStatus = {
+  status: "RUNNING" | "SUCCEEDED" | "FAILED";
+  updated?: number;
+  next_start?: string | null;
+};
+
 export default function SuccessPage() {
   const [error, setError] = useState<string | null>(null);
   const [msg, setMsg] = useState<string>();
@@ -51,26 +57,27 @@ export default function SuccessPage() {
   const handleSync = async () => {
     setError(null);
     setMsg(undefined);
+
     try {
       // 1) 실행 시작
       const res = await fetch("/api/trigger-sync");
       if (!res.ok) throw new Error("동기화 시작에 실패했습니다.");
-      const { executionArn } = await res.json();
+      const { executionArn } = (await res.json()) as { executionArn: string };
 
       // 2) 폴링
-      let json: any = {};
+      let json: SyncStatus;
       do {
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise(r => setTimeout(r, 2000)); // 2초 대기
         const st = await fetch(`/api/sync-status?arn=${executionArn}`);
         if (!st.ok) throw new Error("상태 조회에 실패했습니다.");
-        json = await st.json();
+        json = (await st.json()) as SyncStatus;
       } while (json.status === "RUNNING");
 
       // 3) 결과 처리
       if (json.next_start === null) {
-        setMsg(`✅ 동기화 완료! 총 ${json.updated}건 업데이트`);
+        setMsg(`✅ 동기화 완료! 총 ${json.updated ?? 0}건 업데이트`);
       } else {
-        setMsg(`🔄 ${json.updated}건 업데이트 완료… 계속 진행 중`);
+        setMsg(`🔄 ${json.updated ?? 0}건 업데이트 완료… 계속 진행 중`);
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
