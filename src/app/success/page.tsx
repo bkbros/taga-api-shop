@@ -106,6 +106,7 @@
 // }
 "use client";
 
+import SyncButton from "components/SyncButton";
 import { useState } from "react";
 
 type SyncStatus = {
@@ -163,6 +164,12 @@ export default function SuccessPage() {
 
       {msg && <p className="mt-4 text-green-600">{msg}</p>}
       {error && <p className="mt-4 text-red-600">에러: {error}</p>}
+
+      <section className="mt-12 p-6 bg-white rounded-lg shadow-lg border">
+        <h2 className="text-2xl font-semibold mb-4 text-center">📊 데이터 동기화</h2>
+        <p className="text-gray-600 text-center mb-6">Google Sheets의 데이터를 Notion으로 자동 동기화합니다.</p>
+        <SyncButton />
+      </section>
     </main>
   );
 }
