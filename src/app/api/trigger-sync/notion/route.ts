@@ -32,12 +32,12 @@ export async function POST(request: NextRequest) {
     } else {
       throw new Error(`GitHub API 오류: ${response.status}`);
     }
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Error:", error);
     return NextResponse.json(
       {
         success: false,
-        message: `오류 발생: ${error.response?.data?.message || error.message}`,
+        message: `오류 발생: ${error}`,
       },
       { status: 500 },
     );
