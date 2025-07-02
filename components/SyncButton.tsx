@@ -36,8 +36,8 @@ export default function SyncButton({ className = "" }: SyncButtonProps) {
       } else {
         setMessage("❌ " + data.message);
       }
-    } catch (error: any) {
-      setMessage(`❌ 네트워크 오류: ${error.message}`);
+    } catch (error: unknown) {
+      setMessage(`❌ 네트워크 오류: ${error}`);
     }
 
     setLoading(false);
