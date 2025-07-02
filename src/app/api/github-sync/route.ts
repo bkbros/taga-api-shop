@@ -6,8 +6,11 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { testOffset = "0", testLimit = "0" } = body;
 
+    console.log("🚀 GitHub Actions 호출 시작...", { testOffset, testLimit });
+
+    // GitHub API를 통해 워크플로우 실행
     const response = await axios.post(
-      `https://api.github.com/repos/bkbros/google-to-notion-automation/dispatches`,
+      `https://api.github.com/repos/bkbros-dev/google-to-notion-automation/dispatches`,
       {
         event_type: "run-sync",
         client_payload: {
@@ -24,26 +27,28 @@ export async function POST(request: NextRequest) {
       },
     );
 
-    if (response.status === 204) {
-      return NextResponse.json({
-        success: true,
-        message: "GitHub Actions 워크플로우가 시작되었습니다!",
-      });
-    } else {
-      throw new Error(`GitHub API 오류: ${response.status}`);
-    }
+    console.log("✅ GitHub API 성공:", response.status);
+
+    return NextResponse.json({
+      success: true,
+      message: "Google to Notion 동기화가 GitHub Actions에서 시작되었습니다!",
+      githubResponse: response.status,
+    });
   } catch (error: unknown) {
-    console.error("Error:", error);
+    console.error("❌ GitHub API 오류:", error);
+
     return NextResponse.json(
       {
         success: false,
-        message: `오류 발생: ${error}`,
+        message: `GitHub API 오류: ${error}`,
+        error: error || "UNKNOWN",
       },
       { status: 500 },
     );
   }
 }
 
+// CORS 처리
 export async function OPTIONS() {
   return new NextResponse(null, {
     status: 200,

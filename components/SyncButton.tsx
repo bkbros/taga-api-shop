@@ -15,7 +15,8 @@ export default function SyncButton({ className = "" }: SyncButtonProps) {
     setMessage("");
 
     try {
-      const response = await fetch("/api/trigger-sync/notion", {
+      // 새로운 GitHub Actions API 호출
+      const response = await fetch("/api/github-sync", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -31,13 +32,15 @@ export default function SyncButton({ className = "" }: SyncButtonProps) {
       if (data.success) {
         setMessage("✅ " + data.message);
         setTimeout(() => {
-          setMessage(prev => prev + "\n🔄 GitHub에서 진행 상황을 확인하세요!");
+          setMessage(prev => prev + "\n🔄 GitHub Actions에서 진행 상황을 확인하세요!");
         }, 1000);
       } else {
         setMessage("❌ " + data.message);
+        console.error("GitHub API 오류:", data);
       }
     } catch (error: unknown) {
-      setMessage(`❌ 네트워크 오류: ${error}`);
+      console.error("네트워크 오류:", error);
+      setMessage(`❌ 네트워크 오류: ${error instanceof Error ? error.message : String(error)}`);
     }
 
     setLoading(false);
@@ -80,7 +83,7 @@ export default function SyncButton({ className = "" }: SyncButtonProps) {
                 <animate attributeName="stroke-dashoffset" dur="2s" values="0;-16;-32;-32" repeatCount="indefinite" />
               </circle>
             </svg>
-            처리 중...
+            GitHub Actions 실행 중...
           </span>
         ) : (
           "🚀 Google → Notion 동기화 시작"
