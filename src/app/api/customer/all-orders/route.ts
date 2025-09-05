@@ -82,12 +82,25 @@ type Cafe24Order = {
   }>;
 };
 
+// YYYY-MM-DD
 function fmt(d: Date) {
-  return d.toISOString().slice(0, 10); // YYYY-MM-DD
+  const yy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yy}-${mm}-${dd}`;
 }
 function addDays(d: Date, days: number) {
   const nd = new Date(d);
   nd.setDate(nd.getDate() + days);
+  return nd;
+}
+// 월 단위로 정확히 3개월 뒤의 "같은 날짜"를 구하고, 하루 빼서 3개월 이내를 보장
+function addMonthsMinusOneDay(d: Date, months: number) {
+  // d는 보통 월초(1일)로 줄 것이므로 안전
+  const nd = new Date(d);
+  nd.setMonth(nd.getMonth() + months);
+  // 3개월 범위 "이내"가 조건이므로 하루 빼기
+  nd.setDate(nd.getDate() - 1);
   return nd;
 }
 
@@ -100,21 +113,23 @@ export async function GET() {
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
     const headers = { Authorization: `Bearer ${access_token}` };
 
-    // ---- 기간 쪼개기 설정 ----
-    const windowDays = 90; // 필요 시 30으로 줄여도 됨
-    const startAll = new Date("2010-01-01"); // 전체 시작(적당히 과거)
-    const endAll = new Date(); // 오늘
     const limit = 100;
+
+    // 전체 조회 기간(필요하면 시작일을 더 최근으로 조정)
+    let cursor = new Date("2010-01-01"); // 시작일
+    const today = new Date(); // 종료 한계
 
     const all: Cafe24Order[] = [];
 
-    // 날짜 구간 루프
-    for (let s = new Date(startAll); s <= endAll; s = addDays(s, windowDays + 1)) {
-      const e = addDays(s, windowDays);
-      const start_date = fmt(s);
-      const end_date = fmt(e > endAll ? endAll : e);
+    while (cursor <= today) {
+      // 이 구간의 end는 "cursor + 3개월 - 1일", 단 today를 넘지 않도록
+      let windowEnd = addMonthsMinusOneDay(cursor, 3);
+      if (windowEnd > today) windowEnd = today;
 
-      // 각 구간에서 페이지네이션
+      const start_date = fmt(cursor);
+      const end_date = fmt(windowEnd);
+
+      // 페이지네이션
       let page = 1;
       while (true) {
         const resp = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
@@ -122,10 +137,10 @@ export async function GET() {
           params: {
             shop_no: shopNo,
             member_id: memberId,
-            date_type: "order_date", // ✅ 주문일 기준
-            start_date, // ✅ 필수
-            end_date, // ✅ 필수
-            embed: "items", // ✅ 품목 포함
+            date_type: "order_date",
+            start_date,
+            end_date,
+            items: "embed", // ✅ 품목 포함(문서/에러 more_info 형식과 일치)
             limit,
             page,
           },
@@ -135,14 +150,16 @@ export async function GET() {
         const batch: Cafe24Order[] = resp.data?.orders ?? resp.data?.order_list ?? [];
         all.push(...batch);
 
-        // 다음 페이지 유무
-        const hasMore = batch.length === limit;
-        if (!hasMore) break;
+        // 다음 페이지 판단(응답에 pagination이 없을 수 있으니 길이로 판단)
+        if (batch.length < limit) break;
         page += 1;
       }
+
+      // 다음 윈도우(겹치지 않게 end 다음 날부터)
+      cursor = addDays(windowEnd, 1);
     }
 
-    // 평탄화
+    // 아이템 평탄화
     const flattenedItems = all.flatMap(o =>
       (o.items ?? []).map(it => ({
         orderId: o.order_id,
