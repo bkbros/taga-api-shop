@@ -6,7 +6,20 @@ import { useState } from "react";
 type SyncStatus = {
   status: "RUNNING" | "SUCCEEDED" | "FAILED";
 };
-
+type AllOrdersResponse = {
+  totalOrders: number;
+  totalItems: number;
+  orders: any[]; // 필요시 세부 타입 정의
+  items: {
+    orderId: string;
+    createdDate?: string;
+    orderItemCode: string;
+    productNo?: number | string;
+    productName?: string;
+    optionValue?: string;
+    qty?: number;
+  }[];
+};
 // ✅ /api/customers/product 또는 /api/fetch-data 응답 스키마
 type CustomerItemsResponse = {
   isVip: boolean;
@@ -19,7 +32,7 @@ export default function SuccessPage() {
   const [msg, setMsg] = useState<string>();
   const [loading, setLoading] = useState<boolean>(false);
   // ❌ any -> ✅ 명시 타입
-  const [data, setData] = useState<CustomerItemsResponse | null>(null);
+  const [data, setData] = useState<AllOrdersResponse | null>(null);
 
   const handleSync = async () => {
     setError(null);
@@ -56,17 +69,14 @@ export default function SuccessPage() {
     try {
       const res = await fetch("/api/customer/all-orders", {
         method: "GET",
-        headers: { "Content-Type": "application/json" },
-        // 테스트용: 힌트는 없어도 됨. 필요하면 group 전달
-        body: JSON.stringify({ hints: { group: "GREEN" } }),
       });
 
       if (!res.ok) {
-        const t = await res.text(); // 디버깅 도움
+        const t = await res.text();
         throw new Error(`데이터 가져오기에 실패했습니다. (${res.status}) ${t}`);
       }
 
-      const json = (await res.json()) as CustomerItemsResponse;
+      const json = (await res.json()) as AllOrdersResponse;
       setData(json);
       setMsg("📥 데이터 가져오기 성공!");
     } catch (err) {
@@ -106,7 +116,16 @@ export default function SuccessPage() {
           {JSON.stringify(data, null, 2)}
         </pre>
       )}
-
+      {data && (
+        <>
+          <p className="mt-4">
+            총 주문수: {data.totalOrders} / 총 아이템수: {data.totalItems}
+          </p>
+          <pre className="mt-6 p-4 bg-gray-100 rounded text-sm max-w-xl overflow-x-auto text-left">
+            {JSON.stringify(data.items.slice(0, 5), null, 2)} {/* 미리보기 */}
+          </pre>
+        </>
+      )}
       <section className="mt-12 p-6 bg-white rounded-lg shadow-lg border">
         <h2 className="text-2xl font-semibold mb-4 text-center">📊 데이터 동기화</h2>
         <p className="text-gray-600 text-center mb-6">Google Sheets의 데이터를 Notion으로 자동 동기화합니다.</p>
