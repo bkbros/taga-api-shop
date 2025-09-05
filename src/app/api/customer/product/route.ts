@@ -1,18 +1,16 @@
+// src/app/api/customer/product/route.ts
 import { NextResponse } from "next/server";
 import axios from "axios";
 import { loadParams } from "@/lib/ssm";
 
-type CustomerItemsPayload = {
-  isVip: boolean;
-  recentBoughtSkus: string[];
-  couponEligible: boolean;
-};
+type Hints = { group?: string };
 
 export async function POST(req: Request) {
-  // ✅ 테스트 단계: memberKey는 안 쓸 거라 언더스코어로 린트 회피
-  const { memberKey: _memberKey, hints } = await req.json();
+  // ✅ memberKey 아예 받지 않음
+  const body = (await req.json()) as { hints?: Hints } | null;
+  const hints = body?.hints;
 
-  // ✅ 테스트용 하드코딩
+  // 테스트용 고정 아이디
   const memberId = "sda0125";
 
   const { access_token } = await loadParams(["access_token"]);
@@ -30,7 +28,7 @@ export async function POST(req: Request) {
     }
   }
 
-  const payload: CustomerItemsPayload = {
+  const payload = {
     isVip: hints?.group === "GREEN" || hints?.group === "BLUE",
     recentBoughtSkus: Array.from(skus).slice(0, 10),
     couponEligible: skus.size > 0,
