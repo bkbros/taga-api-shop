@@ -6,25 +6,21 @@ import { useState } from "react";
 type SyncStatus = {
   status: "RUNNING" | "SUCCEEDED" | "FAILED";
 };
+type AllOrdersItem = {
+  orderId: string;
+  createdDate?: string;
+  orderItemCode: string;
+  productNo?: number | string;
+  productName?: string;
+  optionValue?: string;
+  qty?: number;
+};
+
 type AllOrdersResponse = {
   totalOrders: number;
   totalItems: number;
-  orders: any[]; // 필요시 세부 타입 정의
-  items: {
-    orderId: string;
-    createdDate?: string;
-    orderItemCode: string;
-    productNo?: number | string;
-    productName?: string;
-    optionValue?: string;
-    qty?: number;
-  }[];
-};
-// ✅ /api/customers/product 또는 /api/fetch-data 응답 스키마
-type CustomerItemsResponse = {
-  isVip: boolean;
-  recentBoughtSkus: string[];
-  couponEligible: boolean;
+  orders: unknown[]; // ← any 대신 unknown 사용
+  items: AllOrdersItem[];
 };
 
 export default function SuccessPage() {
