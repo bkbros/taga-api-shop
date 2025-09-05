@@ -7,25 +7,30 @@ type SyncStatus = {
   status: "RUNNING" | "SUCCEEDED" | "FAILED";
 };
 
+// ✅ /api/customers/product 또는 /api/fetch-data 응답 스키마
+type CustomerItemsResponse = {
+  isVip: boolean;
+  recentBoughtSkus: string[];
+  couponEligible: boolean;
+};
+
 export default function SuccessPage() {
   const [error, setError] = useState<string | null>(null);
   const [msg, setMsg] = useState<string>();
   const [loading, setLoading] = useState<boolean>(false);
-  const [data, setData] = useState<any>(null);
+  // ❌ any -> ✅ 명시 타입
+  const [data, setData] = useState<CustomerItemsResponse | null>(null);
 
-  // 🔹 동기화 실행
   const handleSync = async () => {
     setError(null);
     setMsg(undefined);
     setLoading(true);
 
     try {
-      // 1) 실행 시작
       const res = await fetch("/api/trigger-sync");
       if (!res.ok) throw new Error("동기화 시작에 실패했습니다.");
       const { executionArn } = (await res.json()) as { executionArn: string };
 
-      // 2) 폴링
       let json: SyncStatus;
       do {
         await new Promise(r => setTimeout(r, 2000));
@@ -34,16 +39,14 @@ export default function SuccessPage() {
         json = (await st.json()) as SyncStatus;
       } while (json.status === "RUNNING");
 
-      // 3) 완료 메시지
-      setMsg(`✅ 동기화 완료!`);
-    } catch (err: unknown) {
+      setMsg("✅ 동기화 완료!");
+    } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
   };
 
-  // 🔹 데이터 가져오기
   const handleFetchData = async () => {
     setError(null);
     setMsg(undefined);
@@ -51,12 +54,13 @@ export default function SuccessPage() {
     setData(null);
 
     try {
+      // 필요하면 '/api/fetch-data' 대신 '/api/customer/product' 사용
       const res = await fetch("/api/fetch-data");
       if (!res.ok) throw new Error("데이터 가져오기에 실패했습니다.");
-      const json = await res.json();
+      const json = (await res.json()) as CustomerItemsResponse; // ✅ 타입 단언
       setData(json);
       setMsg("📥 데이터 가져오기 성공!");
-    } catch (err: unknown) {
+    } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
