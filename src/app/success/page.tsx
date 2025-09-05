@@ -197,7 +197,7 @@ export default function SuccessPage() {
     setProducts([]);
 
     try {
-      const res = await fetch("/api/customer/all-orders", { method: "GET" });
+      const res = await fetch("/api/customer/all-orders?status=delivered", { method: "GET" });
       if (!res.ok) {
         const t = await res.text();
         throw new Error(`데이터 가져오기에 실패했습니다. (${res.status}) ${t}`);
