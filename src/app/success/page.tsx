@@ -54,10 +54,19 @@ export default function SuccessPage() {
     setData(null);
 
     try {
-      // 필요하면 '/api/fetch-data' 대신 '/api/customer/product' 사용
-      const res = await fetch("/api/customer/product");
-      if (!res.ok) throw new Error("데이터 가져오기에 실패했습니다.");
-      const json = (await res.json()) as CustomerItemsResponse; // ✅ 타입 단언
+      const res = await fetch("/api/customer/product", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // 테스트용: 힌트는 없어도 됨. 필요하면 group 전달
+        body: JSON.stringify({ hints: { group: "GREEN" } }),
+      });
+
+      if (!res.ok) {
+        const t = await res.text(); // 디버깅 도움
+        throw new Error(`데이터 가져오기에 실패했습니다. (${res.status}) ${t}`);
+      }
+
+      const json = (await res.json()) as CustomerItemsResponse;
       setData(json);
       setMsg("📥 데이터 가져오기 성공!");
     } catch (err) {
