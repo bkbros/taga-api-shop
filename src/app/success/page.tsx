@@ -54,7 +54,7 @@ export default function SuccessPage() {
     setData(null);
 
     try {
-      const res = await fetch("/api/customer/product", {
+      const res = await fetch("/api/customer/all-orders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         // 테스트용: 힌트는 없어도 됨. 필요하면 group 전달
