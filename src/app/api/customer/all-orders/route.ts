@@ -82,6 +82,15 @@ type Cafe24Order = {
   }>;
 };
 
+function fmt(d: Date) {
+  return d.toISOString().slice(0, 10); // YYYY-MM-DD
+}
+function addDays(d: Date, days: number) {
+  const nd = new Date(d);
+  nd.setDate(nd.getDate() + days);
+  return nd;
+}
+
 export async function GET() {
   try {
     const memberId = "sda0125"; // 테스트용
@@ -91,30 +100,49 @@ export async function GET() {
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
     const headers = { Authorization: `Bearer ${access_token}` };
 
+    // ---- 기간 쪼개기 설정 ----
+    const windowDays = 90; // 필요 시 30으로 줄여도 됨
+    const startAll = new Date("2010-01-01"); // 전체 시작(적당히 과거)
+    const endAll = new Date(); // 오늘
     const limit = 100;
-    let page = 1;
+
     const all: Cafe24Order[] = [];
 
-    while (true) {
-      const resp = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
-        headers,
-        params: {
-          shop_no: shopNo, // ✅ 권장
-          member_id: memberId,
-          embed: "items",
-          limit,
-          page,
-        },
-        timeout: 20000,
-      });
+    // 날짜 구간 루프
+    for (let s = new Date(startAll); s <= endAll; s = addDays(s, windowDays + 1)) {
+      const e = addDays(s, windowDays);
+      const start_date = fmt(s);
+      const end_date = fmt(e > endAll ? endAll : e);
 
-      const batch: Cafe24Order[] = resp.data?.orders ?? resp.data?.order_list ?? [];
-      all.push(...batch);
+      // 각 구간에서 페이지네이션
+      let page = 1;
+      while (true) {
+        const resp = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
+          headers,
+          params: {
+            shop_no: shopNo,
+            member_id: memberId,
+            date_type: "order_date", // ✅ 주문일 기준
+            start_date, // ✅ 필수
+            end_date, // ✅ 필수
+            embed: "items", // ✅ 품목 포함
+            limit,
+            page,
+          },
+          timeout: 20000,
+        });
 
-      if (batch.length < limit) break;
-      page += 1;
+        const batch: Cafe24Order[] = resp.data?.orders ?? resp.data?.order_list ?? [];
+        all.push(...batch);
+
+        // 다음 페이지 유무
+        const hasMore = batch.length === limit;
+        if (!hasMore) break;
+        page += 1;
+      }
     }
 
+    // 평탄화
     const flattenedItems = all.flatMap(o =>
       (o.items ?? []).map(it => ({
         orderId: o.order_id,
