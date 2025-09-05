@@ -55,7 +55,7 @@ export default function SuccessPage() {
 
     try {
       // 필요하면 '/api/fetch-data' 대신 '/api/customer/product' 사용
-      const res = await fetch("/api/fetch-data");
+      const res = await fetch("/api/customer/product");
       if (!res.ok) throw new Error("데이터 가져오기에 실패했습니다.");
       const json = (await res.json()) as CustomerItemsResponse; // ✅ 타입 단언
       setData(json);
