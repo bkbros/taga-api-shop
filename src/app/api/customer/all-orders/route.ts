@@ -120,8 +120,6 @@
 //     );
 //   }
 // }
-// src/app/api/customer/all-orders/route.ts
-// src/app/api/customer/all-orders/route.ts
 import { NextResponse } from "next/server";
 import axios, { AxiosError } from "axios";
 import { loadParams } from "@/lib/ssm";
@@ -129,6 +127,8 @@ import { loadParams } from "@/lib/ssm";
 type Cafe24Order = {
   order_id: string;
   created_date?: string;
+  order_status?: string; // N코드 또는 문자열이 올 수 있어 여유있게 유지
+  status?: string; // 일부 버전 필드명
   items?: Array<{
     order_item_code: string;
     product_no?: number;
@@ -138,7 +138,7 @@ type Cafe24Order = {
   }>;
 };
 
-// YYYY-MM-DD
+// 날짜 유틸
 const fmt = (d: Date) => {
   const yy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, "0");
@@ -158,13 +158,11 @@ const addMonthsMinusOneDay = (d: Date, months: number) => {
   return nd;
 };
 
-// 사용자가 넣은 status 쿼리(별칭/코드/콤마)를 카페24 코드로 정제
+// ?status=delivered|shipped|N40,... → "N40,N50" 형태로 변환
 function toOrderStatusCodes(input: string | null): string | undefined {
   if (!input) return undefined;
 
-  // 허용 코드 화이트리스트
   const ALLOWED = new Set([
-    // Normal
     "N00",
     "N10",
     "N20",
@@ -173,7 +171,6 @@ function toOrderStatusCodes(input: string | null): string | undefined {
     "N30",
     "N40",
     "N50",
-    // Cancel
     "C00",
     "C10",
     "C11",
@@ -185,7 +182,6 @@ function toOrderStatusCodes(input: string | null): string | undefined {
     "C47",
     "C48",
     "C49",
-    // Return
     "R00",
     "R10",
     "R12",
@@ -194,7 +190,6 @@ function toOrderStatusCodes(input: string | null): string | undefined {
     "R34",
     "R36",
     "R40",
-    // Exchange (일부)
     "E00",
     "E10",
     "N01",
@@ -204,12 +199,11 @@ function toOrderStatusCodes(input: string | null): string | undefined {
     "E30",
   ]);
 
-  const mapAlias = (t: string): string[] => {
+  const alias = (t: string): string[] => {
     switch (t) {
-      // ✅ 한국어/영어 별칭들
       case "delivered":
       case "배송완료":
-      case "shipped": // 보통 '배송완료'를 의미한다고 가정
+      case "shipped":
       case "complete":
       case "completed":
         return ["N40"];
@@ -244,21 +238,17 @@ function toOrderStatusCodes(input: string | null): string | undefined {
     .split(",")
     .map(s => s.trim())
     .filter(Boolean);
-
   const codes: string[] = [];
   for (const tk of tokens) {
-    // 코드 직접 입력(Nxx/Cxx/Exx/Rxx)도 허용
-    const maybeCode = tk.toUpperCase();
-    if (/^[NCRE]\d{2}$/.test(maybeCode)) {
-      if (ALLOWED.has(maybeCode)) codes.push(maybeCode);
+    const maybe = tk.toUpperCase();
+    if (/^[NCRE]\d{2}$/.test(maybe)) {
+      if (ALLOWED.has(maybe)) codes.push(maybe);
       continue;
     }
-    // 별칭 → 코드
-    for (const c of mapAlias(tk.toLowerCase())) {
+    for (const c of alias(tk.toLowerCase())) {
       if (ALLOWED.has(c)) codes.push(c);
     }
   }
-
   const dedup = Array.from(new Set(codes));
   return dedup.length ? dedup.join(",") : undefined;
 }
@@ -266,11 +256,10 @@ function toOrderStatusCodes(input: string | null): string | undefined {
 export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
-    // 예: ?status=delivered  또는 ?status=N40,N50
     const statusParam = url.searchParams.get("status");
     const orderStatus = toOrderStatusCodes(statusParam);
 
-    // (테스트 고정) 실제 서비스에선 인증 세션/쿠키로 memberId 식별
+    // (테스트 고정) 실제 서비스에선 로그인 세션으로 식별
     const memberId = "sda0125";
     const shopNo = 1;
 
@@ -279,12 +268,12 @@ export async function GET(request: Request) {
     const headers = { Authorization: `Bearer ${access_token}` };
 
     const limit = 100;
-    let cursor = new Date("2010-01-01"); // 전체 조회 시작일(원하면 더 최근으로)
+    let cursor = new Date("2010-01-01");
     const today = new Date();
 
     const all: Cafe24Order[] = [];
 
-    // 3개월 단위 윈도우로 끊어서 전부 조회 (API 제약)
+    // 3개월 윈도우 반복 (카페24 검색기간 제약)
     while (cursor <= today) {
       let windowEnd = addMonthsMinusOneDay(cursor, 3);
       if (windowEnd > today) windowEnd = today;
@@ -293,19 +282,18 @@ export async function GET(request: Request) {
       const end_date = fmt(windowEnd);
 
       let page = 1;
-      // 페이지네이션: 응답 길이로 다음 페이지 유무 판단
       while (true) {
         const params: Record<string, string | number> = {
           shop_no: shopNo,
           member_id: memberId,
-          date_type: "order_date", // 주문일 기준
+          date_type: "order_date",
           start_date,
           end_date,
-          items: "embed", // 품목 포함
+          embed: "items", // ✅ 품목 포함 (중요!)
           limit,
           page,
         };
-        if (orderStatus) params.order_status = orderStatus; // ✅ 코드만 전달(공백 X)
+        if (orderStatus) params.order_status = orderStatus;
 
         const resp = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
           headers,
@@ -319,10 +307,16 @@ export async function GET(request: Request) {
         if (batch.length < limit) break;
         page += 1;
       }
-
-      // 다음 윈도우 (겹치지 않게 다음날로 이동)
       cursor = addDays(windowEnd, 1);
     }
+
+    // 배송완료(N40) 주문번호 목록
+    const deliveredOrderIds = all
+      .filter(o => {
+        const st = (o.order_status ?? o.status ?? "").toString().toUpperCase();
+        return st === "N40" || st === "DELIVERY_COMPLETE";
+      })
+      .map(o => o.order_id);
 
     // 아이템 평탄화
     const items = all.flatMap(o =>
@@ -340,6 +334,8 @@ export async function GET(request: Request) {
     const res = NextResponse.json({
       totalOrders: all.length,
       totalItems: items.length,
+      deliveredCount: deliveredOrderIds.length,
+      deliveredOrderIds, // ✅ 요청하신 "배송완료된 order_id"
       orders: all,
       items,
     });

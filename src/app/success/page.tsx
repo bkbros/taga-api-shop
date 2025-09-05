@@ -20,13 +20,15 @@ type AllOrdersItem = {
 type AllOrdersOrder = {
   order_id: string;
   created_date?: string;
-  order_status?: string; // 몰/버전에 따라 다를 수 있으니 여유롭게
+  order_status?: string; // N코드 또는 문자열
   status?: string;
 };
 
 type AllOrdersResponse = {
   totalOrders: number;
   totalItems: number;
+  deliveredCount?: number; // ✅ 서버가 추가로 내려줌
+  deliveredOrderIds?: string[]; // ✅ 서버가 추가로 내려줌
   orders: AllOrdersOrder[];
   items: AllOrdersItem[];
 };
@@ -34,14 +36,20 @@ type AllOrdersResponse = {
 type ProductRow = {
   productNo: string;
   name?: string;
-  variants: string[]; // 포함된 옵션(고유값)
-  totalQty: number; // 누적 수량
-  ordersCount: number; // 주문 건수
-  firstPurchased?: string; // YYYY-MM-DD
-  lastPurchased?: string; // YYYY-MM-DD
+  variants: string[];
+  totalQty: number;
+  ordersCount: number;
+  firstPurchased?: string;
+  lastPurchased?: string;
 };
 
-const DEFAULT_ALLOWED_STATUSES = new Set(["DELIVERY_COMPLETE", "PURCHASE_CONFIRM"]);
+// 상태 문자열 보정: N40→DELIVERY_COMPLETE, N50→PURCHASE_CONFIRM
+function normalizeStatus(s?: string) {
+  const t = (s ?? "").toUpperCase();
+  if (t === "N40") return "DELIVERY_COMPLETE";
+  if (t === "N50") return "PURCHASE_CONFIRM";
+  return t;
+}
 
 function ymd(d?: string) {
   if (!d) return undefined;
@@ -54,6 +62,7 @@ function ymd(d?: string) {
 function buildProductList(
   data: AllOrdersResponse,
   opts?: {
+    // ✅ 기본값을 없앰(=필터 끔). 필요하면 호출 시에만 넣어서 필터링.
     allowedStatuses?: Set<string>;
     from?: string; // "YYYY-MM-DD"
     to?: string; // "YYYY-MM-DD"
@@ -62,7 +71,7 @@ function buildProductList(
   },
 ): ProductRow[] {
   const {
-    allowedStatuses = DEFAULT_ALLOWED_STATUSES,
+    allowedStatuses, // 기본 미적용
     from,
     to,
     groupByVariant = false,
@@ -80,8 +89,12 @@ function buildProductList(
   const filtered = (data.items || []).filter(it => {
     if (!it.productNo) return false;
     const oi = orderIndex.get(it.orderId);
-    // 상태 필터: 상태가 존재할 때만 적용(없으면 통과)
-    if (oi?.status && !allowedStatuses.has(oi.status)) return false;
+
+    // ✅ allowedStatuses가 있을 때만 상태 필터 적용 (없으면 통과)
+    if (allowedStatuses && oi?.status) {
+      const ns = normalizeStatus(oi.status);
+      if (!allowedStatuses.has(ns)) return false;
+    }
 
     const d = ymd(it.createdDate) || ymd(oi?.date);
     if (from && d && d < from) return false;
@@ -146,7 +159,7 @@ function buildProductList(
         return b.ordersCount - a.ordersCount;
       case "lastPurchased":
       default:
-        return (b.lastPurchased || "").localeCompare(a.lastPurchased || "");
+        return (b.lastPurchased || "").localeCompare(b.lastPurchased || "");
     }
   });
 
@@ -188,7 +201,7 @@ export default function SuccessPage() {
     }
   };
 
-  // “데이터 가져오기” 버튼: sda0125 전체 주문 + 상품 리스트 집계
+  // “데이터 가져오기” 버튼: sda0125의 '배송완료' 주문 + 상품 집계
   const handleFetchData = async () => {
     setError(null);
     setMsg(undefined);
@@ -197,7 +210,10 @@ export default function SuccessPage() {
     setProducts([]);
 
     try {
-      const res = await fetch("/api/customer/all-orders?status=delivered", { method: "GET" });
+      // 서버 라우트는 embed=items + deliveredOrderIds 반환
+      const res = await fetch("/api/customer/all-orders?status=delivered", {
+        method: "GET",
+      });
       if (!res.ok) {
         const t = await res.text();
         throw new Error(`데이터 가져오기에 실패했습니다. (${res.status}) ${t}`);
@@ -205,12 +221,10 @@ export default function SuccessPage() {
       const json = (await res.json()) as AllOrdersResponse;
       setRaw(json);
 
-      // 상품단위(옵션 합산), 완료건만, 최근 구매일 순 정렬
+      // ✅ 상태 필터는 기본 끔(서버에서 이미 delivered로 걸러왔음)
       const list = buildProductList(json, {
-        // allowedStatuses: DEFAULT_ALLOWED_STATUSES, // 상태 기준 안 쓰려면 주석 유지
         groupByVariant: false,
         sortBy: "lastPurchased",
-        // from: "2023-01-01", to: "2025-12-31", // 기간 제한이 필요하면 사용
       });
       setProducts(list);
 
@@ -248,6 +262,23 @@ export default function SuccessPage() {
       {msg && <p className="mt-2 text-green-600">{msg}</p>}
       {error && <p className="mt-2 text-red-600">에러: {error}</p>}
 
+      {/* ✅ 배송완료 order_id 목록 표시 */}
+      {raw?.deliveredOrderIds && raw.deliveredOrderIds.length > 0 && (
+        <div className="mt-6 w-full max-w-3xl text-sm">
+          <div className="flex justify-between items-center mb-2">
+            <span className="font-medium">배송완료 주문건수: {raw.deliveredOrderIds.length}</span>
+            <span className="text-gray-500">상위 50개 표시</span>
+          </div>
+          <ul className="divide-y rounded border bg-white">
+            {raw.deliveredOrderIds.slice(0, 50).map(id => (
+              <li key={id} className="p-3 font-mono text-xs">
+                {id}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* 집계된 상품 리스트 */}
       {products.length > 0 && (
         <div className="mt-6 w-full max-w-3xl text-sm">
@@ -277,7 +308,7 @@ export default function SuccessPage() {
         </div>
       )}
 
-      {/* 원본 JSON 미리보기(필요 시 참고) */}
+      {/* 원본 JSON 미리보기 */}
       {raw && (
         <div className="mt-8 w-full max-w-3xl">
           <p className="mb-2 font-medium">원본 응답(일부):</p>
@@ -286,6 +317,8 @@ export default function SuccessPage() {
               {
                 totalOrders: raw.totalOrders,
                 totalItems: raw.totalItems,
+                deliveredCount: raw.deliveredCount,
+                deliveredOrderIdsPreview: raw.deliveredOrderIds?.slice(0, 5),
                 sampleItems: raw.items.slice(0, 5),
               },
               null,
