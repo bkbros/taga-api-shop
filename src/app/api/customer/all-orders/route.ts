@@ -162,10 +162,10 @@ function addMonthsMinusOneDay(d: Date, months: number) {
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
-    // ✅ 쿼리 지원: ?status=DELIVERY_COMPLETE,PURCHASE_CONFIRM&from=YYYY-MM-DD&to=YYYY-MM-DD
+    // ?status=DELIVERY_COMPLETE,PURCHASE_CONFIRM&from=YYYY-MM-DD&to=YYYY-MM-DD
     const statusCsv = url.searchParams.get("status") || "DELIVERY_COMPLETE";
-    const fromQ = url.searchParams.get("from"); // 없으면 과거부터
-    const toQ = url.searchParams.get("to"); // 없으면 오늘까지
+    const fromQ = url.searchParams.get("from");
+    const toQ = url.searchParams.get("to");
 
     const memberId = "sda0125"; // 테스트용
     const shopNo = 1;
@@ -176,9 +176,10 @@ export async function GET(req: Request) {
 
     const limit = 100;
 
-    // 전체 조회 기간
-    let startAll = fromQ ? new Date(fromQ) : new Date("2010-01-01");
-    let endAll = toQ ? new Date(toQ) : new Date();
+    // ✅ const로 변경 (prefer-const 해결)
+    const startAll = fromQ ? new Date(fromQ) : new Date("2010-01-01");
+    const endAll = toQ ? new Date(toQ) : new Date();
+
     if (Number.isNaN(+startAll) || Number.isNaN(+endAll) || startAll > endAll) {
       return NextResponse.json({ error: "Invalid date range. Use YYYY-MM-DD and ensure from <= to." }, { status: 400 });
     }
@@ -203,8 +204,8 @@ export async function GET(req: Request) {
             date_type: "order_date",
             start_date,
             end_date,
-            items: "embed", // 품목 포함
-            order_status: statusCsv, // ✅ 서버에서 상태 필터
+            items: "embed",
+            order_status: statusCsv, // 서버에서 상태 필터
             limit,
             page,
           },
