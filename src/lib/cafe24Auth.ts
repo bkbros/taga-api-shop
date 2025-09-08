@@ -1,63 +1,72 @@
 // src/lib/cafe24Auth.ts
-import axios from "axios";
-import { loadParams, saveParams } from "@/lib/ssm";
+import axios, { AxiosResponse } from "axios";
+import { loadParams, saveParam } from "@/lib/ssm";
 
-const SKEW_MS = 60_000; // 만료 60초 전이면 갱신
+const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
+const clientId = process.env.CAFE24_CLIENT_ID!;
+const clientSecret = process.env.CAFE24_CLIENT_SECRET!;
 
-function now() {
-  return Date.now();
-}
+// Cafe24 토큰 응답 타입
+type TokenResponse = {
+  access_token: string;
+  token_type: string; // 보통 "Bearer"
+  expires_in: number; // 초 단위
+  scope?: string;
+  refresh_token?: string;
+};
 
-export async function getAccessToken(): Promise<string> {
-  const { access_token, access_token_expires_at, refresh_token } = await loadParams([
-    "access_token",
-    "access_token_expires_at",
-    "refresh_token",
-  ]).catch(() => ({} as any));
+const EXPIRY_SKEW_SEC = 60; // 만료 버퍼(초)
 
-  const exp = Number(access_token_expires_at || 0);
-  if (access_token && exp && now() < exp - SKEW_MS) {
-    return access_token;
-  }
+/** 내부: refresh_token으로 새 access_token 발급 + SSM 갱신 */
+async function refreshAccessToken(): Promise<{ token: string; expiresAtMs: number }> {
+  const { refresh_token } = await loadParams(["refresh_token"]);
   if (!refresh_token) {
     throw new Error("Missing refresh_token in SSM");
   }
-  return refreshAccessToken(refresh_token);
+
+  const url = `https://${mallId}.cafe24api.com/api/v2/oauth/token`;
+  const form = new URLSearchParams();
+  form.set("grant_type", "refresh_token");
+  form.set("refresh_token", refresh_token);
+  form.set("client_id", clientId);
+  form.set("client_secret", clientSecret);
+
+  const resp: AxiosResponse<TokenResponse> = await axios.post(url, form, {
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    timeout: 20_000,
+  });
+
+  const { access_token, expires_in, refresh_token: newRefresh } = resp.data;
+  const expiresAtMs = Date.now() + Math.max(0, (expires_in - EXPIRY_SKEW_SEC) * 1000);
+
+  await Promise.all([
+    saveParam("access_token", access_token),
+    saveParam("access_token_expires_at", String(expiresAtMs)),
+    ...(newRefresh ? [saveParam("refresh_token", newRefresh)] : []),
+  ]);
+
+  return { token: access_token, expiresAtMs };
 }
 
+/** 만료 전이면 기존 토큰, 아니면 자동으로 새로 받아서 리턴 */
+export async function getAccessToken(): Promise<string> {
+  try {
+    const { access_token, access_token_expires_at } = await loadParams(["access_token", "access_token_expires_at"]);
+    const expMs = Number(access_token_expires_at || "0");
+    if (!access_token || !expMs || Date.now() >= expMs) {
+      const { token } = await refreshAccessToken();
+      return token;
+    }
+    return access_token;
+  } catch (_e: unknown) {
+    // 저장된 값이 없거나 에러면 강제 리프레시 후 반환
+    const { token } = await refreshAccessToken();
+    return token;
+  }
+}
+
+/** 무조건 새로 받아서 리턴 (401 등에서 재시도용) */
 export async function forceRefresh(): Promise<string> {
-  const { refresh_token } = await loadParams(["refresh_token"]);
-  if (!refresh_token) throw new Error("Missing refresh_token in SSM");
-  return refreshAccessToken(refresh_token);
-}
-
-async function refreshAccessToken(refreshToken: string): Promise<string> {
-  const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
-  const clientId = process.env.CAFE24_CLIENT_ID!;
-  const clientSecret = process.env.CAFE24_CLIENT_SECRET!;
-
-  const body = new URLSearchParams({
-    grant_type: "refresh_token",
-    refresh_token: refreshToken,
-  });
-
-  const resp = await axios.post(`https://${mallId}.cafe24api.com/api/v2/oauth/token`, body, {
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Authorization: "Basic " + Buffer.from(`${clientId}:${clientSecret}`).toString("base64"),
-    },
-    timeout: 15000,
-  });
-
-  const { access_token, expires_in, refresh_token: new_refresh_token } = resp.data;
-  const expires_at = (now() + Number(expires_in) * 1000).toString();
-
-  // ✅ 여러 키를 한 번에 SSM 저장
-  await saveParams({
-    access_token,
-    access_token_expires_at: expires_at,
-    ...(new_refresh_token ? { refresh_token: new_refresh_token } : {}),
-  });
-
-  return access_token as string;
+  const { token } = await refreshAccessToken();
+  return token;
 }
