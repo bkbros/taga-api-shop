@@ -372,8 +372,8 @@ type Cafe24Order = {
 
 /* -------------------- CORS -------------------- */
 const ALLOWED_ORIGINS = [
-  "http://skin-mobile11.bkbros.cafe24.com", // 콘솔에 찍힌 origin 그대로
-  "https://skin-mobile11.bkbros.cafe24.com", // https 도 허용
+  "http://skin-mobile11.bkbros.cafe24.com",
+  "https://skin-mobile11.bkbros.cafe24.com",
   "https://taga-api-shop.vercel.app",
   "http://localhost:3000",
 ];
@@ -384,7 +384,6 @@ function withCORS(res: NextResponse, origin: string | null) {
   res.headers.set("Vary", "Origin");
   res.headers.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.headers.set("Access-Control-Allow-Headers", "Content-Type,Authorization,X-APP-SECRET");
-  // 쿠키가 필요하면 아래 주석 해제 + Allow-Origin에 * 금지
   // res.headers.set("Access-Control-Allow-Credentials", "true");
   res.headers.set("Access-Control-Max-Age", "86400");
   return res;
@@ -532,7 +531,7 @@ export async function GET(request: Request) {
     const headers = { Authorization: `Bearer ${access_token}` };
 
     const limit = 100;
-    let cursor = new Date("2010-01-01"); // 전체 조회 시작일
+    let cursor = new Date("2010-01-01");
     const today = new Date();
 
     const all: Cafe24Order[] = [];
@@ -574,13 +573,30 @@ export async function GET(request: Request) {
       cursor = addDays(windowEnd, 1);
     }
 
-    // 배송완료(N40) 주문번호 목록
-    const deliveredOrderIds = all
-      .filter(o => {
-        const st = (o.order_status ?? o.status ?? "").toString().toUpperCase();
-        return st === "N40" || st === "DELIVERY_COMPLETE";
-      })
-      .map(o => o.order_id);
+    // ✅ deliveredOrderIds 계산 로직 수정
+    // - 쿼리로 상태가 들어온 경우: 이미 Cafe24가 상태로 필터한 결과이므로 그대로 반환
+    // - 쿼리 없이 전체 조회한 경우: N40/N50(문자 문자열 포함)로 서버에서 판별
+    let deliveredOrderIds: string[];
+    if (orderStatus) {
+      deliveredOrderIds = all.map(o => o.order_id);
+    } else {
+      const isDeliveredOrConfirmed = (o: Cafe24Order) => {
+        const top = (o.order_status ?? o.status ?? "").toString().toUpperCase();
+        if (top) {
+          if (top === "N40" || top === "N50" || top === "DELIVERY_COMPLETE" || top === "PURCHASE_CONFIRM") return true;
+        }
+        // 상단 상태가 비어있으면 item 레벨 상태로 판정
+        const itemCodes = (o.items ?? [])
+          .map(it => (it as any).order_status ?? (it as any).status)
+          .filter(Boolean)
+          .map(s => String(s).toUpperCase());
+        return (
+          itemCodes.length > 0 &&
+          itemCodes.every(c => c === "N40" || c === "N50" || c === "DELIVERY_COMPLETE" || c === "PURCHASE_CONFIRM")
+        );
+      };
+      deliveredOrderIds = all.filter(isDeliveredOrConfirmed).map(o => o.order_id);
+    }
 
     // 아이템 평탄화
     const items = all.flatMap(o =>
@@ -599,7 +615,7 @@ export async function GET(request: Request) {
       totalOrders: all.length,
       totalItems: items.length,
       deliveredCount: deliveredOrderIds.length,
-      deliveredOrderIds, // ✅ 배송완료된 order_id
+      deliveredOrderIds, // ✅ 배송완료/구매확정 order_id
       orders: all,
       items,
     });
