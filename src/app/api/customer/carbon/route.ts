@@ -305,7 +305,7 @@ export async function POST(req: Request) {
       return withCORS(errRes, origin);
     }
 
-    const receivedPid = body?.pid ?? null;
+    const receivedPid = body?.pid && body.pid.trim() ? body.pid.trim() : undefined; // string | undefined
     const resolvedMemberId = (await lookupMemberIdByPid(receivedPid)) ?? null;
 
     if (!resolvedMemberId) {
