@@ -222,8 +222,9 @@
 //   }
 // }
 import { NextResponse } from "next/server";
-import axios, { AxiosError } from "axios";
-import { loadParams } from "@/lib/ssm";
+import axios, { AxiosError, isAxiosError } from "axios";
+// ❌ import { loadParams } from "@/lib/ssm";
+import { getAccessToken, forceRefresh } from "@/lib/cafe24Auth"; // ✅ 토큰 매니저
 
 /* ===== 설정 ===== */
 const CO2_PER_UNIT_KG = 0.6;
@@ -294,7 +295,7 @@ const addMonthsMinusOneDay = (d: Date, months: number) => {
 const monthsAgo = (n: number) => {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
-  d.setDate(1); // 월초부터
+  d.setDate(1);
   d.setMonth(d.getMonth() - n);
   return d;
 };
@@ -347,10 +348,35 @@ export async function POST(req: Request) {
     const includeBreakdown = Boolean(body?.includeBreakdown);
 
     // -------- 인증/환경 --------
-    const { access_token } = await loadParams(["access_token"]);
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
-    const headers = { Authorization: `Bearer ${access_token}` };
     const shopNo = 1;
+
+    // ✅ 만료 자동 처리되는 토큰 가져오기
+    let accessToken = await getAccessToken();
+
+    // ✅ 401 시 자동 새토큰 후 1회 재시도하는 헬퍼
+    const callOrders = async (params: Record<string, string | number>): Promise<Cafe24Order[]> => {
+      const url = `https://${mallId}.cafe24api.com/api/v2/admin/orders`;
+      const doCall = async (token: string) =>
+        axios.get(url, {
+          headers: { Authorization: `Bearer ${token}` },
+          params,
+          timeout: 20000,
+        });
+
+      try {
+        const resp = await doCall(accessToken);
+        return (resp.data?.orders ?? resp.data?.order_list ?? []) as Cafe24Order[];
+      } catch (err: unknown) {
+        if (isAxiosError(err) && err.response?.status === 401) {
+          // 만료 → 강제 리프레시 후 1회 재시도
+          accessToken = await forceRefresh();
+          const resp2 = await doCall(accessToken);
+          return (resp2.data?.orders ?? resp2.data?.order_list ?? []) as Cafe24Order[];
+        }
+        throw err;
+      }
+    };
 
     // -------- 집계 컨테이너(스트리밍) --------
     const byProduct = new Map<string, { name?: string; units: number; last?: string }>();
@@ -385,17 +411,11 @@ export async function POST(req: Request) {
           page,
         };
 
-        const resp = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
-          headers,
-          params,
-          timeout: 20000,
-        });
-
-        const batch: Cafe24Order[] = resp.data?.orders ?? resp.data?.order_list ?? [];
+        const batch = await callOrders(params);
         fetchedOrders += batch.length;
         pageCount++;
 
-        // ★ 받아오는 즉시 합산 (배열에 쌓지 않음)
+        // 받아오는 즉시 합산
         for (const o of batch) {
           const orderDate = ymd(o.created_date);
           for (const it of o.items ?? []) {
