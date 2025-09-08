@@ -356,19 +356,27 @@ import { NextResponse } from "next/server";
 import axios, { AxiosError } from "axios";
 import { loadParams } from "@/lib/ssm";
 
+/* -------------------- 타입 -------------------- */
+type Cafe24OrderItem = {
+  order_item_code: string;
+  product_no?: number;
+  product_name?: string;
+  option_value?: string;
+  quantity?: number;
+  // 🔹 일부 몰/버전에서 품목 레벨에 상태가 있음
+  order_status?: string;
+  status?: string;
+};
+
 type Cafe24Order = {
   order_id: string;
   created_date?: string;
-  order_status?: string; // N코드 또는 문자열
-  status?: string; // 일부 버전 필드명
-  items?: Array<{
-    order_item_code: string;
-    product_no?: number;
-    product_name?: string;
-    option_value?: string;
-    quantity?: number;
-  }>;
+  // 🔹 주문 상단 상태(몰/버전에 따라 필드명이 다를 수 있음)
+  order_status?: string;
+  status?: string;
+  items?: Cafe24OrderItem[];
 };
+/* ---------------------------------------------- */
 
 /* -------------------- CORS -------------------- */
 const ALLOWED_ORIGINS = [
@@ -406,16 +414,15 @@ const addDays = (d: Date, days: number) => {
   nd.setDate(nd.getDate() + days);
   return nd;
 };
-// d + months 의 같은 날짜에서 하루 빼서 3개월 이내 보장
 const addMonthsMinusOneDay = (d: Date, months: number) => {
   const nd = new Date(d);
   nd.setMonth(nd.getMonth() + months);
   nd.setDate(nd.getDate() - 1);
   return nd;
 };
-/* --------------------------------------------------- */
+/* ---------------------------------------------- */
 
-/* ---- ?status=delivered|shipped|N40,... → "N40,N50" 형태 변환 ---- */
+/* ---- ?status=delivered|N40,... → "N40,N50" 형태 변환 ---- */
 function toOrderStatusCodes(input: string | null): string | undefined {
   if (!input) return undefined;
 
@@ -513,7 +520,7 @@ function toOrderStatusCodes(input: string | null): string | undefined {
   const dedup = Array.from(new Set(codes));
   return dedup.length ? dedup.join(",") : undefined;
 }
-/* ------------------------------------------------------------ */
+/* ------------------------------------------------ */
 
 export async function GET(request: Request) {
   const origin = request.headers.get("Origin");
@@ -552,7 +559,7 @@ export async function GET(request: Request) {
           date_type: "order_date",
           start_date,
           end_date,
-          embed: "items", // ✅ 품목 포함 (중요!)
+          embed: "items", // ✅ 품목 포함
           limit,
           page,
         };
@@ -573,28 +580,29 @@ export async function GET(request: Request) {
       cursor = addDays(windowEnd, 1);
     }
 
-    // ✅ deliveredOrderIds 계산 로직 수정
-    // - 쿼리로 상태가 들어온 경우: 이미 Cafe24가 상태로 필터한 결과이므로 그대로 반환
-    // - 쿼리 없이 전체 조회한 경우: N40/N50(문자 문자열 포함)로 서버에서 판별
+    // ✅ deliveredOrderIds 계산 로직
     let deliveredOrderIds: string[];
     if (orderStatus) {
+      // 쿼리로 상태를 지정한 경우: 이미 Cafe24에서 그 상태로 필터된 결과임
       deliveredOrderIds = all.map(o => o.order_id);
     } else {
+      // 쿼리 미지정: 상단 상태가 없으면 품목 상태로 판별
       const isDeliveredOrConfirmed = (o: Cafe24Order) => {
-        const top = (o.order_status ?? o.status ?? "").toString().toUpperCase();
-        if (top) {
-          if (top === "N40" || top === "N50" || top === "DELIVERY_COMPLETE" || top === "PURCHASE_CONFIRM") return true;
-        }
-        // 상단 상태가 비어있으면 item 레벨 상태로 판정
+        const top = (o.order_status ?? o.status ?? "").toUpperCase();
+        if (top === "N40" || top === "N50" || top === "DELIVERY_COMPLETE" || top === "PURCHASE_CONFIRM") return true;
+
+        // 🔹 any 없이 item 레벨 상태 확인
         const itemCodes = (o.items ?? [])
-          .map(it => (it as any).order_status ?? (it as any).status)
-          .filter(Boolean)
-          .map(s => String(s).toUpperCase());
+          .map(it => it.order_status ?? it.status)
+          .filter((s): s is string => Boolean(s))
+          .map(s => s.toUpperCase());
+
         return (
           itemCodes.length > 0 &&
           itemCodes.every(c => c === "N40" || c === "N50" || c === "DELIVERY_COMPLETE" || c === "PURCHASE_CONFIRM")
         );
       };
+
       deliveredOrderIds = all.filter(isDeliveredOrConfirmed).map(o => o.order_id);
     }
 
@@ -615,7 +623,7 @@ export async function GET(request: Request) {
       totalOrders: all.length,
       totalItems: items.length,
       deliveredCount: deliveredOrderIds.length,
-      deliveredOrderIds, // ✅ 배송완료/구매확정 order_id
+      deliveredOrderIds,
       orders: all,
       items,
     });
