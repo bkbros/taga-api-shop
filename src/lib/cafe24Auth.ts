@@ -58,7 +58,7 @@ export async function getAccessToken(): Promise<string> {
       return token;
     }
     return access_token;
-  } catch (_e: unknown) {
+  } catch {
     // 저장된 값이 없거나 에러면 강제 리프레시 후 반환
     const { token } = await refreshAccessToken();
     return token;
