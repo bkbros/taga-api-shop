@@ -43,6 +43,18 @@ type ProductRow = {
   lastPurchased?: string;
 };
 
+type CustomerInfo = {
+  userId: string;
+  userName?: string;
+  memberGrade: string;
+  joinDate?: string;
+  totalPurchaseAmount: number;
+  totalOrders: number;
+  email?: string;
+  phone?: string;
+  lastLoginDate?: string;
+};
+
 // 상태 문자열 보정: N40→DELIVERY_COMPLETE, N50→PURCHASE_CONFIRM
 function normalizeStatus(s?: string) {
   const t = (s ?? "").toUpperCase();
@@ -173,6 +185,7 @@ export default function SuccessPage() {
 
   const [raw, setRaw] = useState<AllOrdersResponse | null>(null); // 원본 응답
   const [products, setProducts] = useState<ProductRow[]>([]); // 집계 결과
+  const [customerInfo, setCustomerInfo] = useState<CustomerInfo | null>(null); // 회원 정보
 
   // (기존) AWS Step Functions 동기화 버튼
   const handleSync = async () => {
@@ -201,34 +214,44 @@ export default function SuccessPage() {
     }
   };
 
-  // “데이터 가져오기” 버튼: sda0125의 '배송완료' 주문 + 상품 집계
+  // "데이터 가져오기" 버튼: sda0125의 '배송완료' 주문 + 상품 집계 + 회원 정보
   const handleFetchData = async () => {
     setError(null);
     setMsg(undefined);
     setLoading(true);
     setRaw(null);
     setProducts([]);
+    setCustomerInfo(null);
 
     try {
-      // 서버 라우트는 embed=items + deliveredOrderIds 반환
-      const res = await fetch("/api/customer/all-orders?status=delivered", {
+      // 1. 주문 데이터 가져오기
+      const ordersRes = await fetch("/api/customer/all-orders?status=delivered", {
         method: "GET",
       });
-      if (!res.ok) {
-        const t = await res.text();
-        throw new Error(`데이터 가져오기에 실패했습니다. (${res.status}) ${t}`);
+      if (!ordersRes.ok) {
+        const t = await ordersRes.text();
+        throw new Error(`주문 데이터 가져오기에 실패했습니다. (${ordersRes.status}) ${t}`);
       }
-      const json = (await res.json()) as AllOrdersResponse;
-      setRaw(json);
+      const ordersJson = (await ordersRes.json()) as AllOrdersResponse;
+      setRaw(ordersJson);
 
-      // ✅ 상태 필터는 기본 끔(서버에서 이미 delivered로 걸러왔음)
-      const list = buildProductList(json, {
+      // 2. 회원 정보 가져오기 (기본 회원 ID: sda0125)
+      const customerRes = await fetch("/api/customer/info?user_id=sda0125", {
+        method: "GET",
+      });
+      if (customerRes.ok) {
+        const customerJson = (await customerRes.json()) as CustomerInfo;
+        setCustomerInfo(customerJson);
+      }
+
+      // 3. 상품 리스트 집계
+      const list = buildProductList(ordersJson, {
         groupByVariant: false,
         sortBy: "lastPurchased",
       });
       setProducts(list);
 
-      setMsg("📥 상품 리스트 생성 완료!");
+      setMsg("📥 데이터 가져오기 완료!");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -261,6 +284,63 @@ export default function SuccessPage() {
 
       {msg && <p className="mt-2 text-green-600">{msg}</p>}
       {error && <p className="mt-2 text-red-600">에러: {error}</p>}
+
+      {/* 회원 정보 표시 */}
+      {customerInfo && (
+        <div className="mt-6 w-full max-w-3xl">
+          <div className="bg-white rounded-lg shadow-lg border p-6">
+            <h3 className="text-lg font-semibold mb-4 text-center">👤 회원 정보</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+              <div className="space-y-2">
+                <div>
+                  <span className="font-medium text-gray-600">회원 ID:</span>
+                  <span className="ml-2">{customerInfo.userId}</span>
+                </div>
+                {customerInfo.userName && (
+                  <div>
+                    <span className="font-medium text-gray-600">회원명:</span>
+                    <span className="ml-2">{customerInfo.userName}</span>
+                  </div>
+                )}
+                <div>
+                  <span className="font-medium text-gray-600">회원 등급:</span>
+                  <span className="ml-2 font-semibold text-blue-600">{customerInfo.memberGrade}</span>
+                </div>
+                {customerInfo.joinDate && (
+                  <div>
+                    <span className="font-medium text-gray-600">가입일:</span>
+                    <span className="ml-2">{new Date(customerInfo.joinDate).toLocaleDateString('ko-KR')}</span>
+                  </div>
+                )}
+              </div>
+              <div className="space-y-2">
+                <div>
+                  <span className="font-medium text-gray-600">총 구매 금액:</span>
+                  <span className="ml-2 font-bold text-green-600">
+                    {customerInfo.totalPurchaseAmount.toLocaleString('ko-KR')}원
+                  </span>
+                </div>
+                <div>
+                  <span className="font-medium text-gray-600">총 주문 건수:</span>
+                  <span className="ml-2">{customerInfo.totalOrders}건</span>
+                </div>
+                {customerInfo.email && (
+                  <div>
+                    <span className="font-medium text-gray-600">이메일:</span>
+                    <span className="ml-2">{customerInfo.email}</span>
+                  </div>
+                )}
+                {customerInfo.lastLoginDate && (
+                  <div>
+                    <span className="font-medium text-gray-600">최근 로그인:</span>
+                    <span className="ml-2">{new Date(customerInfo.lastLoginDate).toLocaleDateString('ko-KR')}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ✅ 배송완료 order_id 목록 표시 */}
       {raw?.deliveredOrderIds && raw.deliveredOrderIds.length > 0 && (
