@@ -27,14 +27,25 @@ type VerificationResult = {
 
 export async function POST(req: Request) {
   try {
+    const body = await req.json();
+    console.log("API 요청 받음:", body);
+
     const {
       spreadsheetId,
       sheetName = "Smore-5pURyYjo8l-HRG",
       serviceAccountKey,
       useEnvCredentials = false
-    } = await req.json();
+    } = body;
+
+    console.log("파싱된 파라미터:", {
+      spreadsheetId,
+      sheetName,
+      useEnvCredentials,
+      hasServiceAccountKey: !!serviceAccountKey
+    });
 
     if (!spreadsheetId) {
+      console.log("에러: spreadsheetId 누락");
       return NextResponse.json({
         error: "spreadsheetId가 필요합니다"
       }, { status: 400 });
@@ -42,9 +53,11 @@ export async function POST(req: Request) {
 
     let credentials;
     if (useEnvCredentials) {
+      console.log("환경변수 인증 사용");
       // 환경변수에서 Google 인증 정보 가져오기
       const googleCredJson = process.env.GOOGLE_CRED_JSON;
       if (!googleCredJson) {
+        console.log("에러: GOOGLE_CRED_JSON 환경변수 누락");
         return NextResponse.json({
           error: "환경변수에 GOOGLE_CRED_JSON이 설정되지 않았습니다"
         }, { status: 500 });
@@ -52,13 +65,17 @@ export async function POST(req: Request) {
 
       try {
         credentials = JSON.parse(Buffer.from(googleCredJson, 'base64').toString('utf-8'));
+        console.log("환경변수 인증 정보 파싱 성공");
       } catch {
+        console.log("에러: 환경변수 인증 정보 파싱 실패");
         return NextResponse.json({
           error: "환경변수의 Google 인증 정보를 파싱할 수 없습니다"
         }, { status: 500 });
       }
     } else {
+      console.log("수동 키 인증 사용");
       if (!serviceAccountKey) {
+        console.log("에러: serviceAccountKey 누락");
         return NextResponse.json({
           error: "serviceAccountKey가 필요합니다"
         }, { status: 400 });
@@ -66,7 +83,9 @@ export async function POST(req: Request) {
 
       try {
         credentials = JSON.parse(serviceAccountKey);
+        console.log("수동 키 파싱 성공");
       } catch {
+        console.log("에러: 수동 키 파싱 실패");
         return NextResponse.json({
           error: "serviceAccountKey 형식이 올바르지 않습니다"
         }, { status: 400 });

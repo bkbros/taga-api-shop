@@ -25,8 +25,13 @@ export default function SheetsVerification() {
   const [useEnvCredentials, setUseEnvCredentials] = useState(true);
 
   const handleVerification = async () => {
-    if (!spreadsheetId || (!useEnvCredentials && !serviceAccountKey)) {
-      setError("스프레드시트 ID와 서비스 계정 키를 입력하세요");
+    if (!spreadsheetId) {
+      setError("스프레드시트 ID를 입력하세요");
+      return;
+    }
+
+    if (!useEnvCredentials && !serviceAccountKey) {
+      setError("서비스 계정 키를 입력하세요");
       return;
     }
 
@@ -35,6 +40,13 @@ export default function SheetsVerification() {
     setResult(null);
 
     try {
+      console.log("API 요청 시작:", {
+        spreadsheetId,
+        sheetName,
+        useEnvCredentials,
+        hasServiceAccountKey: !!serviceAccountKey
+      });
+
       const response = await fetch("/api/sheets/verify-members", {
         method: "POST",
         headers: {
@@ -48,14 +60,25 @@ export default function SheetsVerification() {
         }),
       });
 
+      console.log("API 응답 상태:", response.status);
+
       if (!response.ok) {
-        const errorData = await response.json();
+        const errorText = await response.text();
+        console.error("API 에러 응답:", errorText);
+        let errorData;
+        try {
+          errorData = JSON.parse(errorText);
+        } catch {
+          throw new Error(`API 요청 실패 (${response.status}): ${errorText}`);
+        }
         throw new Error(errorData.error || "검증 요청 실패");
       }
 
       const data = await response.json();
+      console.log("API 성공 응답:", data);
       setResult(data);
     } catch (err) {
+      console.error("검증 에러:", err);
       setError(err instanceof Error ? err.message : "알 수 없는 오류 발생");
     } finally {
       setLoading(false);
