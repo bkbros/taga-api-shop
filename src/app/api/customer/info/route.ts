@@ -81,7 +81,7 @@ export async function GET(req: Request) {
 
     // 422 에러 상세 정보 출력
     if (error instanceof Error && 'response' in error) {
-      const axiosError = error as any;
+      const axiosError = error as { response?: { status?: number; data?: unknown }; config?: { url?: string; params?: unknown; headers?: unknown } };
       console.error(`[ERROR] Status: ${axiosError.response?.status}`);
       console.error(`[ERROR] Data:`, axiosError.response?.data);
       console.error(`[ERROR] Config:`, {
