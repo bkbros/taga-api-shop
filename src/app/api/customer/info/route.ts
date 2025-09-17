@@ -52,8 +52,8 @@ export async function GET(req: Request) {
     });
 
     // 주문 정보는 일단 기본값으로 설정 (API 에러 방지)
-    let totalOrders = 0;
-    let totalPurchaseAmount = 0;
+    const totalOrders = 0;
+    const totalPurchaseAmount = 0;
 
     console.log(`[INFO] 주문 조회는 현재 비활성화됨 (422 에러 방지)`);
     console.log(`[INFO] member_id: ${customer.member_id}`);
