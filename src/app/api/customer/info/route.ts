@@ -28,12 +28,13 @@ export async function GET(req: Request) {
     const { access_token } = await loadParams(["access_token"]);
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
 
-    // 1. Get customer basic info including grade and join date
+    // 1. Get customer basic info (embed 파라미터 제거하여 422 에러 방지)
+    console.log(`[DEBUG] Searching customer with user_id: ${userId}`);
     const customerRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
       params: {
         user_id: userId,
-        limit: 1,
-        embed: "group" // Include customer group info for grade
+        limit: 1
+        // embed: "group" 제거 - 422 에러 원인일 수 있음
       },
       headers: { Authorization: `Bearer ${access_token}` },
     });
@@ -78,8 +79,28 @@ export async function GET(req: Request) {
   } catch (error: unknown) {
     console.error("Customer info fetch error:", error);
 
-    if (error instanceof Error && 'response' in error && (error as { response?: { status?: number } }).response?.status === 401) {
-      return NextResponse.json({ error: "Unauthorized - token may be expired" }, { status: 401 });
+    // 422 에러 상세 정보 출력
+    if (error instanceof Error && 'response' in error) {
+      const axiosError = error as any;
+      console.error(`[ERROR] Status: ${axiosError.response?.status}`);
+      console.error(`[ERROR] Data:`, axiosError.response?.data);
+      console.error(`[ERROR] Config:`, {
+        url: axiosError.config?.url,
+        params: axiosError.config?.params,
+        headers: axiosError.config?.headers
+      });
+
+      if (axiosError.response?.status === 422) {
+        return NextResponse.json({
+          error: "Invalid request parameters",
+          details: axiosError.response?.data,
+          requestedUserId: userId
+        }, { status: 422 });
+      }
+
+      if (axiosError.response?.status === 401) {
+        return NextResponse.json({ error: "Unauthorized - token may be expired" }, { status: 401 });
+      }
     }
 
     return NextResponse.json(
