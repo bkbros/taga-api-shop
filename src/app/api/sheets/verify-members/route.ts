@@ -237,27 +237,36 @@ export async function POST(req: Request) {
           continue;
         }
 
-        // 주문 건수 조회 재시도 (간단한 파라미터로)
+        // customer/info API 방식: member_id로 직접 주문 조회
         let totalOrders = 0;
 
         try {
-          console.log(`주문 건수 조회 시작: ${customer.member_id}`);
+          console.log(`customer/info 방식 주문 조회 시작: ${customer.member_id}`);
 
-          // 간단한 주문 조회 (최소 파라미터만)
+          // customer/info와 동일한 방식
           const ordersRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
             params: {
-              member_id: customer.member_id, // 원본 member_id 사용
-              limit: 100 // 최근 100건만
+              member_id: customer.member_id, // @k 포함된 member_id 그대로 사용
+              limit: 200, // customer/info보다 적게 (API 제한 고려)
+              embed: "items" // customer/info와 동일
             },
             headers: { Authorization: `Bearer ${access_token}` },
-            timeout: 5000,
+            timeout: 8000,
           });
 
-          totalOrders = ordersRes.data.orders?.length || 0;
-          console.log(`주문 건수 조회 성공: ${totalOrders}건`);
+          if (ordersRes.data.orders) {
+            // customer/info와 동일: 완료된 주문만 집계 (N40: 배송완료, N50: 구매확정)
+            const completedOrders = ordersRes.data.orders.filter((order: { order_status?: string }) =>
+              order.order_status === "N40" || order.order_status === "N50"
+            );
+            totalOrders = completedOrders.length;
+            console.log(`customer/info 방식 성공: 전체 ${ordersRes.data.orders.length}건 중 완료 ${totalOrders}건`);
+          } else {
+            totalOrders = 0;
+          }
 
         } catch (orderError) {
-          console.log(`주문 조회 실패 (0으로 처리): ${orderError instanceof Error ? orderError.message : String(orderError)}`);
+          console.log(`customer/info 방식 실패 (0으로 처리): ${orderError instanceof Error ? orderError.message : String(orderError)}`);
           totalOrders = 0;
         }
 
