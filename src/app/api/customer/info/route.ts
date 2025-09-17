@@ -28,64 +28,54 @@ export async function GET(req: Request) {
     const { access_token } = await loadParams(["access_token"]);
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
 
-    // 1. Get customer basic info (다양한 방법으로 시도)
-    console.log(`[DEBUG] Searching customer with user_id: ${userId}`);
-    console.log(`[DEBUG] URL decoded user_id: ${decodeURIComponent(userId)}`);
+    // 1. Members API로 login_id 검색하여 정확한 member_id 획득
+    console.log(`[DEBUG] Searching member with login_id: ${userId}`);
 
     // URL 디코딩 처리
     const decodedUserId = decodeURIComponent(userId);
-    console.log(`[DEBUG] Decoded ID: ${decodedUserId}`);
+    console.log(`[DEBUG] Decoded login_id: ${decodedUserId}`);
 
-    let customerRes;
+    let memberRes;
+    let numericMemberId;
 
-    // 방법 1: URL 디코딩된 ID로 member_id 검색
+    // Members API로 login_id 검색
     try {
-      console.log(`[TRY1] member_id로 검색 (디코딩된 ID): ${decodedUserId}`);
-      customerRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
+      console.log(`[MEMBERS API] login_id로 검색: ${decodedUserId}`);
+      memberRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/members`, {
         params: {
-          member_id: decodedUserId,
+          login_id: decodedUserId,
           limit: 1
         },
         headers: { Authorization: `Bearer ${access_token}` },
       });
-      console.log(`[TRY1] 성공: member_id로 고객 찾음`);
-      console.log(`[TRY1] 응답 데이터:`, JSON.stringify(customerRes.data, null, 2));
-    } catch {
-      console.log(`[TRY1] 실패: 디코딩된 member_id 검색 에러`);
 
-      // 방법 2: @k 제거 후 member_id로 검색
-      const cleanUserId = decodedUserId.replace('@k', '');
-      try {
-        console.log(`[TRY2] member_id로 검색 (정리된 ID): ${cleanUserId}`);
-        customerRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
-          params: {
-            member_id: cleanUserId,
-            limit: 1
-          },
-          headers: { Authorization: `Bearer ${access_token}` },
-        });
-        console.log(`[TRY2] 성공: member_id로 고객 찾음`);
-        console.log(`[TRY2] 응답 데이터:`, JSON.stringify(customerRes.data, null, 2));
-      } catch {
-        console.log(`[TRY2] 실패: member_id 검색 에러`);
-
-        // 방법 3: 원본 user_id로 검색 시도
-        try {
-          console.log(`[TRY3] user_id로 검색 (원본 ID): ${userId}`);
-          customerRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
-            params: {
-              user_id: userId,
-              limit: 1
-            },
-            headers: { Authorization: `Bearer ${access_token}` },
-          });
-          console.log(`[TRY3] 성공: user_id로 고객 찾음`);
-          console.log(`[TRY3] 응답 데이터:`, JSON.stringify(customerRes.data, null, 2));
-        } catch (userIdError) {
-          console.log(`[TRY3] 실패: user_id 검색 에러`);
-          throw userIdError; // 원래 user_id 에러를 throw
-        }
+      if (memberRes.data.members && memberRes.data.members.length > 0) {
+        numericMemberId = memberRes.data.members[0].member_id;
+        console.log(`[MEMBERS API] 성공: 숫자형 member_id 획득: ${numericMemberId}`);
+      } else {
+        console.log(`[MEMBERS API] 회원을 찾을 수 없음`);
+        throw new Error('Member not found');
       }
+    } catch (memberError) {
+      console.log(`[MEMBERS API] 실패:`, memberError instanceof Error ? memberError.message : String(memberError));
+      throw memberError;
+    }
+
+    // 2. 획득한 숫자형 member_id로 Customers API 호출
+    let customerRes;
+    try {
+      console.log(`[CUSTOMERS API] 숫자형 member_id로 검색: ${numericMemberId}`);
+      customerRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
+        params: {
+          member_id: numericMemberId,
+          limit: 1
+        },
+        headers: { Authorization: `Bearer ${access_token}` },
+      });
+      console.log(`[CUSTOMERS API] 성공: 고객 정보 획득`);
+    } catch (customerError) {
+      console.log(`[CUSTOMERS API] 실패:`, customerError instanceof Error ? customerError.message : String(customerError));
+      throw customerError;
     }
 
     console.log(`[FINAL CHECK] customerRes.data:`, JSON.stringify(customerRes.data, null, 2));
@@ -109,12 +99,65 @@ export async function GET(req: Request) {
       mallId: mallId
     });
 
-    // 주문 정보는 일단 기본값으로 설정 (API 에러 방지)
-    const totalOrders = 0;
-    const totalPurchaseAmount = 0;
+    // 3. 획득한 숫자형 member_id로 주문 정보 조회
+    let totalOrders = 0;
+    let totalPurchaseAmount = 0;
 
-    console.log(`[INFO] 주문 조회는 현재 비활성화됨 (422 에러 방지)`);
-    console.log(`[INFO] member_id: ${customer.member_id}`);
+    try {
+      console.log(`[ORDERS API] 숫자형 member_id로 주문 조회: ${numericMemberId}`);
+
+      const endDate = new Date().toISOString().split('T')[0];
+      const startDate = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+      // Orders Count API로 완료된 주문 건수 조회
+      const countRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders/count`, {
+        params: {
+          shop_no: 1,
+          start_date: startDate,
+          end_date: endDate,
+          member_id: numericMemberId, // 숫자형 member_id 사용
+          order_status: "N40,N50" // 배송완료, 구매확정
+        },
+        headers: { Authorization: `Bearer ${access_token}` },
+        timeout: 5000
+      });
+
+      totalOrders = countRes.data.count || 0;
+      console.log(`[ORDERS API] 성공: ${totalOrders}건`);
+
+      // 금액은 별도로 조회 (소량의 데이터만)
+      if (totalOrders > 0) {
+        try {
+          const ordersRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
+            params: {
+              shop_no: 1,
+              start_date: startDate,
+              end_date: endDate,
+              member_id: numericMemberId, // 숫자형 member_id 사용
+              order_status: "N40,N50",
+              limit: 50 // 최근 50건만
+            },
+            headers: { Authorization: `Bearer ${access_token}` },
+            timeout: 5000
+          });
+
+          if (ordersRes.data.orders) {
+            totalPurchaseAmount = ordersRes.data.orders.reduce((sum: number, order: { order_price_amount?: string }) => {
+              return sum + parseFloat(order.order_price_amount || "0");
+            }, 0);
+            console.log(`[ORDERS API] 금액 계산 완료: ${totalPurchaseAmount}원`);
+          }
+        } catch (amountError) {
+          console.log(`[ORDERS API] 금액 조회 실패, 건수만 사용: ${amountError instanceof Error ? amountError.message : String(amountError)}`);
+          totalPurchaseAmount = 0;
+        }
+      }
+
+    } catch (ordersError) {
+      console.log(`[ORDERS API] 실패: ${ordersError instanceof Error ? ordersError.message : String(ordersError)}`);
+      totalOrders = 0;
+      totalPurchaseAmount = 0;
+    }
 
     console.log(`[FINAL RESULT] totalOrders: ${totalOrders}, totalPurchaseAmount: ${totalPurchaseAmount}`);
 
