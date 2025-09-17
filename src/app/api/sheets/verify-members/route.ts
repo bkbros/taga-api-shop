@@ -17,7 +17,7 @@ type VerificationResult = {
   cafe24Data?: {
     userId?: string;
     userName?: string;
-    memberGrade: string;
+    memberGrade: number;
     joinDate?: string;
     totalOrders: number;
   };
