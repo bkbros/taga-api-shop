@@ -229,9 +229,38 @@ export async function POST(req: Request) {
           continue;
         }
 
-        // 주문 건수 조회 임시 비활성화 (422 에러 해결될 때까지)
-        const totalOrders = 0;
-        console.log(`회원 정보 저장: ${customer.member_id} (주문 조회는 현재 비활성화)`);
+        // 주문 건수 조회 재시도 (간단한 파라미터로)
+        let totalOrders = 0;
+
+        try {
+          console.log(`주문 건수 조회 시작: ${customer.member_id}`);
+
+          // 간단한 주문 조회 (최소 파라미터만)
+          const ordersRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
+            params: {
+              member_id: customer.member_id, // 원본 member_id 사용
+              limit: 100 // 최근 100건만
+            },
+            headers: { Authorization: `Bearer ${access_token}` },
+            timeout: 5000,
+          });
+
+          totalOrders = ordersRes.data.orders?.length || 0;
+          console.log(`주문 건수 조회 성공: ${totalOrders}건`);
+
+        } catch (orderError) {
+          console.log(`주문 조회 실패 (0으로 처리): ${orderError instanceof Error ? orderError.message : String(orderError)}`);
+          totalOrders = 0;
+        }
+
+        // 회원 등급 정보 로깅
+        console.log(`회원 등급 정보 확인:`, {
+          member_id: customer.member_id,
+          group: customer.group,
+          group_no: customer.group?.group_no,
+          group_name: customer.group?.group_name,
+          group_no_type: typeof customer.group?.group_no
+        });
 
         verificationResults.push({
           rowIndex: member.rowIndex,
@@ -241,7 +270,7 @@ export async function POST(req: Request) {
           cafe24Data: {
             userId: customer.user_id || customer.member_id || "", // 실제 user_id 우선, 없으면 member_id
             userName: customer.user_name || "",
-            memberGrade: customer.group?.group_no || 1, // 숫자 등급 사용 (문자열이 아닌 숫자)
+            memberGrade: customer.group?.group_no ? parseInt(customer.group.group_no.toString()) : 1, // 숫자 등급 변환
             joinDate: customer.created_date || "",
             totalOrders, // 구매 건수
           },
