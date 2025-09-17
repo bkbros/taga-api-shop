@@ -30,7 +30,7 @@ export async function GET(req: Request) {
 
   // 입력값 형태에 따라 검색 방법 결정 (최상위 스코프로 이동)
   const isNumericId = /^\d+$/.test(decodedUserId);
-  const searchParam = isNumericId ? 'member_id' : 'user_id';
+  const searchParam = isNumericId ? 'member_no' : 'user_id';
 
   try {
     const { access_token } = await loadParams(["access_token"]);
@@ -40,14 +40,14 @@ export async function GET(req: Request) {
     console.log(`[DEBUG] Searching customer with user_id: ${userId}`);
 
     let customerRes;
-    let numericMemberId;
+    let memberLoginId; // member_id는 로그인 ID (문자열)
 
-    console.log(`[CUSTOMERS API] ${searchParam}로 검색: ${decodedUserId} (${isNumericId ? '숫자 PK' : '로그인 ID'})`);
+    console.log(`[CUSTOMERS API] ${searchParam}로 검색: ${decodedUserId} (${isNumericId ? 'member_no (숫자 PK)' : 'user_id (로그인 ID)'})`);
 
     try {
       customerRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
         params: {
-          [searchParam]: decodedUserId, // 숫자면 member_id, 문자열이면 user_id
+          [searchParam]: decodedUserId, // 숫자면 member_no, 문자열이면 user_id
           limit: 1
         },
         headers: {
@@ -58,15 +58,37 @@ export async function GET(req: Request) {
 
       if (customerRes.data.customers && customerRes.data.customers.length > 0) {
         const customer = customerRes.data.customers[0];
-        numericMemberId = customer.member_id;
-        console.log(`[CUSTOMERS API] 성공: 숫자형 member_id 획득: ${numericMemberId}`);
+        memberLoginId = customer.member_id || customer.user_id; // member_id = 로그인 ID (문자열), 방어 코드
+
+        if (!memberLoginId) {
+          console.log(`[CUSTOMERS API] 경고: member_id/user_id가 비어있음`);
+          return NextResponse.json({
+            error: "Customer found but missing login ID",
+            customerData: customer
+          }, { status: 404 });
+        }
+
+        console.log(`[CUSTOMERS API] 성공: member_id(로그인ID) 획득: ${memberLoginId}`);
         console.log(`[CUSTOMERS API] 고객 정보:`, JSON.stringify(customer, null, 2));
       } else {
-        console.log(`[CUSTOMERS API] 고객을 찾을 수 없음`);
-        throw new Error('Customer not found');
+        console.log(`[CUSTOMERS API] 고객을 찾을 수 없음 - 404 반환`);
+        return NextResponse.json({
+          error: "Customer not found",
+          searchParam: searchParam,
+          searchValue: decodedUserId
+        }, { status: 404 });
       }
     } catch (customerError) {
       console.log(`[CUSTOMERS API] 실패:`, customerError instanceof Error ? customerError.message : String(customerError));
+
+      // 422 에러면 상세 로그 출력
+      if (customerError instanceof Error && 'response' in customerError) {
+        const axiosError = customerError as { response?: { status?: number; data?: unknown } };
+        if (axiosError.response?.status === 422) {
+          console.error(`[CUSTOMERS API 422] 상세 원인:`, axiosError.response?.data);
+        }
+      }
+
       throw customerError;
     }
 
@@ -76,15 +98,15 @@ export async function GET(req: Request) {
     console.log(`[DEBUG] Customer data:`, {
       member_id: customer.member_id,
       user_id: customer.user_id,
-      numericMemberId: numericMemberId
+      memberLoginId: memberLoginId
     });
 
-    // 3. 획득한 숫자형 member_id로 주문 정보 조회
+    // 3. 획득한 member_id(로그인ID)로 주문 정보 조회
     let totalOrders = 0;
     let totalPurchaseAmount = 0;
 
     try {
-      console.log(`[ORDERS API] 숫자형 member_id로 주문 조회: ${numericMemberId}`);
+      console.log(`[ORDERS API] member_id(로그인ID)로 주문 조회: ${memberLoginId}`);
 
       const endDate = new Date().toISOString().split('T')[0];
       const startDate = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
@@ -95,7 +117,7 @@ export async function GET(req: Request) {
           shop_no: 1,
           start_date: startDate,
           end_date: endDate,
-          member_id: numericMemberId, // 숫자형 member_id 사용
+          member_id: memberLoginId, // member_id는 로그인 ID (문자열)
           order_status: "N40,N50" // 배송완료, 구매확정
         },
         headers: { Authorization: `Bearer ${access_token}` },
@@ -113,7 +135,7 @@ export async function GET(req: Request) {
               shop_no: 1,
               start_date: startDate,
               end_date: endDate,
-              member_id: numericMemberId, // 숫자형 member_id 사용
+              member_id: memberLoginId, // member_id는 로그인 ID (문자열)
               order_status: "N40,N50",
               limit: 50 // 최근 50건만
             },
@@ -157,7 +179,7 @@ export async function GET(req: Request) {
     return NextResponse.json(customerInfo);
 
   } catch (error: unknown) {
-    console.error("Customer info fetch error:", error);
+    console.error(`[최상위 에러] 고객 정보 조회 실패 요약:`, error instanceof Error ? error.message : String(error));
 
     // 422 에러 상세 정보 출력
     if (error instanceof Error && 'response' in error) {
@@ -177,7 +199,7 @@ export async function GET(req: Request) {
           details: axiosError.response?.data,
           requestedUserId: userId,
           decodedUserId: decodedUserId,
-          searchParam: isNumericId ? 'member_id' : 'user_id'
+          searchParam: searchParam
         }, { status: 422 });
       }
 
