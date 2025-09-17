@@ -44,6 +44,7 @@ export async function GET(req: Request) {
         headers: { Authorization: `Bearer ${access_token}` },
       });
       console.log(`[TRY1] 성공: member_id로 고객 찾음`);
+      console.log(`[TRY1] 응답 데이터:`, JSON.stringify(customerRes.data, null, 2));
     } catch {
       console.log(`[TRY1] 실패: member_id 검색 에러`);
 
@@ -58,6 +59,7 @@ export async function GET(req: Request) {
           headers: { Authorization: `Bearer ${access_token}` },
         });
         console.log(`[TRY2] 성공: user_id로 고객 찾음`);
+      console.log(`[TRY2] 응답 데이터:`, JSON.stringify(customerRes.data, null, 2));
       } catch (userIdError) {
         console.log(`[TRY2] 실패: user_id 검색 에러`);
 
@@ -72,6 +74,7 @@ export async function GET(req: Request) {
             headers: { Authorization: `Bearer ${access_token}` },
           });
           console.log(`[TRY3] 성공: phone으로 고객 찾음`);
+          console.log(`[TRY3] 응답 데이터:`, JSON.stringify(customerRes.data, null, 2));
         } catch {
           console.log(`[TRY3] 실패: phone 검색 에러`);
           throw userIdError; // 원래 user_id 에러를 throw
@@ -79,8 +82,16 @@ export async function GET(req: Request) {
       }
     }
 
+    console.log(`[FINAL CHECK] customerRes.data:`, JSON.stringify(customerRes.data, null, 2));
+    console.log(`[FINAL CHECK] customers 배열 길이:`, customerRes.data.customers?.length);
+
     if (!customerRes.data.customers || customerRes.data.customers.length === 0) {
-      return NextResponse.json({ error: "Customer not found" }, { status: 404 });
+      console.log(`[ERROR] 고객 데이터가 비어있음 - 404 반환`);
+      return NextResponse.json({
+        error: "Customer not found",
+        searchedId: userId,
+        responseData: customerRes.data
+      }, { status: 404 });
     }
 
     const customer = customerRes.data.customers[0] as Customer;
