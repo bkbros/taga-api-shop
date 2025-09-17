@@ -208,7 +208,7 @@ export async function GET(req: Request) {
           details: axiosError.response?.data,
           requestedUserId: userId,
           decodedUserId: decodedUserId,
-          searchParam: searchParam
+          searchParam: isPhonePattern ? 'cellphone' : 'member_id'
         }, { status: 422 });
       }
 
