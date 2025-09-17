@@ -122,27 +122,14 @@ export async function GET(req: Request) {
         console.log(`[LEGACY RETRY] 2024-01-01 버전으로 member_no/user_id 재시도`);
 
         try {
-          // member_no로 재시도
-          customerRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
-            params: {
-              member_no: decodedUserId,
-              limit: 1
-            },
-            headers: {
-              Authorization: `Bearer ${access_token}`,
-              'X-Cafe24-Api-Version': '2024-01-01'
-            },
-          });
+          let legacySuccess = false;
 
-          if (customerRes.data.customers && customerRes.data.customers.length > 0) {
-            const customer = customerRes.data.customers[0];
-            memberLoginId = customer.member_id || customer.user_id;
-            console.log(`[LEGACY RETRY] 성공: member_no로 고객 찾음, member_id: ${memberLoginId}`);
-          } else {
-            // user_id로도 시도
+          // 1차: member_id로 재시도 (레거시에서도 로그인 ID로 시도)
+          try {
+            console.log(`[LEGACY RETRY] 1차: member_id로 재시도`);
             customerRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
               params: {
-                user_id: decodedUserId,
+                member_id: decodedUserId,
                 limit: 1
               },
               headers: {
@@ -154,17 +141,83 @@ export async function GET(req: Request) {
             if (customerRes.data.customers && customerRes.data.customers.length > 0) {
               const customer = customerRes.data.customers[0];
               memberLoginId = customer.member_id || customer.user_id;
-              console.log(`[LEGACY RETRY] 성공: user_id로 고객 찾음, member_id: ${memberLoginId}`);
-            } else {
-              console.log(`[LEGACY RETRY] 실패: 레거시 버전에서도 고객 없음`);
-              return NextResponse.json({
-                error: "Customer not found in both modern and legacy API",
-                searchValue: decodedUserId
-              }, { status: 404 });
+              console.log(`[LEGACY RETRY] 1차 성공: member_id로 고객 찾음, login_id: ${memberLoginId}`);
+              legacySuccess = true;
+            }
+          } catch (memberIdError) {
+            console.log(`[LEGACY RETRY] 1차 실패: member_id 에러 - ${memberIdError instanceof Error ? memberIdError.message : String(memberIdError)}`);
+          }
+
+          // 2차: user_id로 재시도
+          if (!legacySuccess) {
+            try {
+              console.log(`[LEGACY RETRY] 2차: user_id로 재시도`);
+              customerRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
+                params: {
+                  user_id: decodedUserId,
+                  limit: 1
+                },
+                headers: {
+                  Authorization: `Bearer ${access_token}`,
+                  'X-Cafe24-Api-Version': '2024-01-01'
+                },
+              });
+
+              if (customerRes.data.customers && customerRes.data.customers.length > 0) {
+                const customer = customerRes.data.customers[0];
+                memberLoginId = customer.member_id || customer.user_id;
+                console.log(`[LEGACY RETRY] 2차 성공: user_id로 고객 찾음, login_id: ${memberLoginId}`);
+                legacySuccess = true;
+              }
+            } catch (userIdError) {
+              console.log(`[LEGACY RETRY] 2차 실패: user_id 에러 - ${userIdError instanceof Error ? userIdError.message : String(userIdError)}`);
             }
           }
+
+          // 3차: 전체 목록에서 수동 검색 (최후의 수단)
+          if (!legacySuccess) {
+            try {
+              console.log(`[LEGACY RETRY] 3차: 전체 목록에서 수동 검색`);
+              customerRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
+                params: {
+                  limit: 100
+                },
+                headers: {
+                  Authorization: `Bearer ${access_token}`,
+                  'X-Cafe24-Api-Version': '2024-01-01'
+                },
+              });
+
+              if (customerRes.data.customers) {
+                const foundCustomer = customerRes.data.customers.find((customer: any) =>
+                  customer.member_id === decodedUserId ||
+                  customer.user_id === decodedUserId ||
+                  customer.member_no === decodedUserId ||
+                  String(customer.member_no) === decodedUserId
+                );
+
+                if (foundCustomer) {
+                  memberLoginId = foundCustomer.member_id || foundCustomer.user_id;
+                  customerRes.data.customers = [foundCustomer]; // 찾은 고객만 설정
+                  console.log(`[LEGACY RETRY] 3차 성공: 전체 목록에서 고객 찾음, login_id: ${memberLoginId}`);
+                  legacySuccess = true;
+                }
+              }
+            } catch (searchError) {
+              console.log(`[LEGACY RETRY] 3차 실패: 전체 검색 에러 - ${searchError instanceof Error ? searchError.message : String(searchError)}`);
+            }
+          }
+
+          if (!legacySuccess) {
+            console.log(`[LEGACY RETRY] 모든 재시도 실패: 고객을 찾을 수 없음`);
+            return NextResponse.json({
+              error: "Customer not found in all retry attempts",
+              searchValue: decodedUserId,
+              attempts: ["modern API member_id", "legacy member_id", "legacy user_id", "legacy full search"]
+            }, { status: 404 });
+          }
         } catch (legacyError) {
-          console.log(`[LEGACY RETRY] 레거시 API도 실패:`, legacyError instanceof Error ? legacyError.message : String(legacyError));
+          console.log(`[LEGACY RETRY] 예외 발생:`, legacyError instanceof Error ? legacyError.message : String(legacyError));
           throw customerError; // 원래 에러를 throw
         }
       } else {
