@@ -26,16 +26,20 @@ type VerificationResult = {
 };
 
 export async function POST(req: Request) {
+  let sheetName = "Smore-5pURyYjo8l-HRG"; // 기본값을 미리 설정
+
   try {
     const body = await req.json();
     console.log("API 요청 받음:", body);
 
     const {
       spreadsheetId,
-      sheetName = "Smore-5pURyYjo8l-HRG",
+      sheetName: requestSheetName = "Smore-5pURyYjo8l-HRG",
       serviceAccountKey,
       useEnvCredentials = false
     } = body;
+
+    sheetName = requestSheetName; // 요청된 값으로 업데이트
 
     console.log("파싱된 파라미터:", {
       spreadsheetId,
@@ -93,18 +97,22 @@ export async function POST(req: Request) {
     }
 
     // Google Sheets API 인증
+    console.log("Google Sheets API 인증 시작");
     const auth = new google.auth.GoogleAuth({
       credentials,
       scopes: ['https://www.googleapis.com/auth/spreadsheets'],
     });
 
     const sheets = google.sheets({ version: 'v4', auth });
+    console.log("Google Sheets 클라이언트 생성 완료");
 
     // 1. 스프레드시트에서 I, J열 (이름, 연락처) 읽기
+    console.log(`스프레드시트 데이터 읽기 시작: ${sheetName}!I:J`);
     const sourceResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range: `${sheetName}!I:J`, // I: 이름, J: 연락처
     });
+    console.log("스프레드시트 데이터 읽기 성공");
 
     const rows = sourceResponse.data.values;
     if (!rows || rows.length <= 1) {
@@ -276,10 +284,24 @@ export async function POST(req: Request) {
 
   } catch (error) {
     console.error("Sheets verification error:", error);
+    console.error("Error stack:", error instanceof Error ? error.stack : "No stack trace");
+
+    let errorMessage = "회원 검증 중 오류 발생";
+    let errorDetails = error instanceof Error ? error.message : String(error);
+
+    // Google Sheets API 특정 에러 처리
+    if (error instanceof Error && error.message.includes("Unable to parse range")) {
+      errorMessage = "잘못된 시트 이름 또는 범위";
+      errorDetails = `시트 이름 '${sheetName}'을 찾을 수 없습니다. 정확한 시트 이름을 확인하세요.`;
+    } else if (error instanceof Error && error.message.includes("permission")) {
+      errorMessage = "권한 오류";
+      errorDetails = "Google Sheets에 대한 접근 권한이 없습니다. 서비스 계정에 편집 권한을 부여하세요.";
+    }
+
     return NextResponse.json(
       {
-        error: "회원 검증 중 오류 발생",
-        details: error instanceof Error ? error.message : String(error)
+        error: errorMessage,
+        details: errorDetails
       },
       { status: 500 }
     );
