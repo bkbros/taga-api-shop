@@ -53,64 +53,36 @@ export async function GET(req: Request) {
     } catch {
       console.log(`[TRY1] 실패: 디코딩된 member_id 검색 에러`);
 
-    // 방법 2: @k 제거 후 member_id로 검색
-    const cleanUserId = decodedUserId.replace('@k', '');
-    try {
-      console.log(`[TRY1] member_id로 검색 (정리된 ID): ${cleanUserId}`);
-      customerRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
-        params: {
-          member_id: cleanUserId,
-          limit: 1
-        },
-        headers: { Authorization: `Bearer ${access_token}` },
-      });
-      console.log(`[TRY1] 성공: member_id로 고객 찾음`);
-      console.log(`[TRY1] 응답 데이터:`, JSON.stringify(customerRes.data, null, 2));
-    } catch {
-      console.log(`[TRY1] 실패: member_id 검색 에러`);
-
-      // 방법 2: 원본 user_id로 검색 시도
+      // 방법 2: @k 제거 후 member_id로 검색
+      const cleanUserId = decodedUserId.replace('@k', '');
       try {
-        console.log(`[TRY2] user_id로 검색 (원본 ID): ${userId}`);
+        console.log(`[TRY2] member_id로 검색 (정리된 ID): ${cleanUserId}`);
         customerRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
           params: {
-            user_id: userId,
+            member_id: cleanUserId,
             limit: 1
           },
           headers: { Authorization: `Bearer ${access_token}` },
         });
-        console.log(`[TRY2] 성공: user_id로 고객 찾음`);
+        console.log(`[TRY2] 성공: member_id로 고객 찾음`);
         console.log(`[TRY2] 응답 데이터:`, JSON.stringify(customerRes.data, null, 2));
-      } catch (userIdError) {
-        console.log(`[TRY2] 실패: user_id 검색 에러`);
+      } catch {
+        console.log(`[TRY2] 실패: member_id 검색 에러`);
 
-        // 방법 3: 검색 조건 없이 전체 목록에서 찾기
+        // 방법 3: 원본 user_id로 검색 시도
         try {
-          console.log(`[TRY3] 전체 고객 목록에서 검색`);
+          console.log(`[TRY3] user_id로 검색 (원본 ID): ${userId}`);
           customerRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
             params: {
-              limit: 100 // 더 많은 데이터 가져와서 수동 검색
+              user_id: userId,
+              limit: 1
             },
             headers: { Authorization: `Bearer ${access_token}` },
           });
-
-          // 수동으로 고객 찾기
-          const foundCustomer = customerRes.data.customers?.find((customer: { member_id?: string; user_id?: string }) =>
-            customer.member_id === userId ||
-            customer.member_id === cleanUserId ||
-            customer.user_id === userId ||
-            customer.user_id === cleanUserId
-          );
-
-          if (foundCustomer) {
-            console.log(`[TRY3] 성공: 전체 목록에서 고객 찾음`);
-            customerRes.data.customers = [foundCustomer]; // 찾은 고객만 배열에 저장
-          } else {
-            console.log(`[TRY3] 실패: 전체 목록에서도 고객 없음`);
-            throw new Error('Customer not found in full list');
-          }
-        } catch {
-          console.log(`[TRY3] 실패: phone 검색 에러`);
+          console.log(`[TRY3] 성공: user_id로 고객 찾음`);
+          console.log(`[TRY3] 응답 데이터:`, JSON.stringify(customerRes.data, null, 2));
+        } catch (userIdError) {
+          console.log(`[TRY3] 실패: user_id 검색 에러`);
           throw userIdError; // 원래 user_id 에러를 throw
         }
       }
