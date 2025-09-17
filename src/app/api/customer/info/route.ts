@@ -49,37 +49,106 @@ export async function GET(req: Request) {
     const customer = customerRes.data.customers[0] as Customer;
 
     // 2. Get customer's order statistics for total purchase amount
-    // API 문서 기준 필수 파라미터 추가
-    const endDate = new Date().toISOString().split('T')[0];
-    const startDate = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-
-    const ordersRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
-      params: {
-        member_id: customer.member_id,
-        start_date: startDate,  // 필수 파라미터
-        end_date: endDate,      // 필수 파라미터
-        shop_no: 1,            // 필수 파라미터
-        limit: 1000,
-        offset: 0,
-        embed: "items"
-      },
-      headers: { Authorization: `Bearer ${access_token}` },
+    console.log(`[DEBUG] Customer data:`, {
+      member_id: customer.member_id,
+      user_id: customer.user_id,
+      mallId: mallId
     });
 
-    // Calculate total purchase amount from completed orders
-    let totalPurchaseAmount = 0;
+    // Orders Count API 사용 (훨씬 효율적!)
     let totalOrders = 0;
+    let totalPurchaseAmount = 0;
 
-    if (ordersRes.data.orders) {
-      const completedOrders = (ordersRes.data.orders as Order[]).filter((order: Order) =>
-        order.order_status === "N40" || order.order_status === "N50" // Delivered or Purchase confirmed
-      );
+    // 방법 1: Orders Count API 사용
+    try {
+      console.log(`[COUNT API] 주문 건수 조회 시작: member_id=${customer.member_id}`);
 
-      totalOrders = completedOrders.length;
-      totalPurchaseAmount = completedOrders.reduce((sum: number, order: Order) => {
-        return sum + parseFloat(order.order_price_amount || "0");
-      }, 0);
+      const endDate = new Date().toISOString().split('T')[0];
+      const startDate = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+      // Count API로 완료된 주문 건수 조회
+      const countRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders/count`, {
+        params: {
+          shop_no: 1,
+          start_date: startDate,
+          end_date: endDate,
+          member_id: customer.member_id,
+          order_status: "N40,N50" // 배송완료, 구매확정
+        },
+        headers: { Authorization: `Bearer ${access_token}` },
+        timeout: 5000
+      });
+
+      totalOrders = countRes.data.count || 0;
+      console.log(`[COUNT API] 성공: ${totalOrders}건`);
+
+      // 금액은 별도로 조회 (소량의 데이터만)
+      if (totalOrders > 0) {
+        try {
+          const ordersRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
+            params: {
+              shop_no: 1,
+              start_date: startDate,
+              end_date: endDate,
+              member_id: customer.member_id,
+              order_status: "N40,N50",
+              limit: 50 // 최근 50건만
+            },
+            headers: { Authorization: `Bearer ${access_token}` },
+            timeout: 5000
+          });
+
+          if (ordersRes.data.orders) {
+            totalPurchaseAmount = ordersRes.data.orders.reduce((sum: number, order: any) => {
+              return sum + parseFloat(order.order_price_amount || "0");
+            }, 0);
+            console.log(`[COUNT API] 금액 계산 완료: ${totalPurchaseAmount}원`);
+          }
+        } catch (amountError) {
+          console.log(`[COUNT API] 금액 조회 실패, 건수만 사용: ${amountError instanceof Error ? amountError.message : String(amountError)}`);
+          totalPurchaseAmount = 0;
+        }
+      }
+
+    } catch (countError) {
+      console.log(`[COUNT API] 실패, 폴백 방법 시도: ${countError instanceof Error ? countError.message : String(countError)}`);
+
+      // 폴백: 기존 방법
+      try {
+        console.log(`[FALLBACK] 기존 orders API 시도`);
+        const endDate = new Date().toISOString().split('T')[0];
+        const startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+        const ordersRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
+          params: {
+            shop_no: 1,
+            start_date: startDate,
+            end_date: endDate,
+            member_id: customer.member_id,
+            limit: 100
+          },
+          headers: { Authorization: `Bearer ${access_token}` },
+          timeout: 8000
+        });
+
+        if (ordersRes.data.orders) {
+          const completedOrders = ordersRes.data.orders.filter((order: any) =>
+            order.order_status === "N40" || order.order_status === "N50"
+          );
+          totalOrders = completedOrders.length;
+          totalPurchaseAmount = completedOrders.reduce((sum: number, order: any) => {
+            return sum + parseFloat(order.order_price_amount || "0");
+          }, 0);
+          console.log(`[FALLBACK] 성공: ${totalOrders}건, ${totalPurchaseAmount}원`);
+        }
+      } catch (fallbackError) {
+        console.log(`[FALLBACK] 실패: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`);
+        totalOrders = 0;
+        totalPurchaseAmount = 0;
+      }
     }
+
+    console.log(`[FINAL RESULT] totalOrders: ${totalOrders}, totalPurchaseAmount: ${totalPurchaseAmount}`);
 
     // Format response data
     const customerInfo = {
