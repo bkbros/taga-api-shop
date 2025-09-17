@@ -157,7 +157,7 @@ export async function POST(req: Request) {
               params: {
                 cellphone: cleanPhone,
                 limit: 10,
-                embed: "group,group_no"
+                embed: "group"
               },
               headers: { Authorization: `Bearer ${access_token}` },
               timeout: 5000,
@@ -166,6 +166,14 @@ export async function POST(req: Request) {
 
             if (cellphoneRes.data.customers && cellphoneRes.data.customers.length > 0) {
               customer = cellphoneRes.data.customers[0];
+              console.log(`고객 정보 상세:`, {
+                member_id: customer.member_id,
+                user_id: customer.user_id,
+                group_no: customer.group_no,
+                member_group_no: customer.member_group_no,
+                customer_group_no: customer.customer_group_no,
+                전체_고객정보: customer
+              });
             }
           } catch (error) {
             console.log(`cellphone 검색 실패: ${error instanceof Error ? error.message : String(error)}`);
@@ -180,7 +188,7 @@ export async function POST(req: Request) {
               params: {
                 phone: member.phone,
                 limit: 10,
-                embed: "group,group_no"
+                embed: "group"
               },
               headers: { Authorization: `Bearer ${access_token}` },
               timeout: 5000,
@@ -203,7 +211,7 @@ export async function POST(req: Request) {
               params: {
                 user_name: member.name,
                 limit: 10,
-                embed: "group,group_no"
+                embed: "group"
               },
               headers: { Authorization: `Bearer ${access_token}` },
               timeout: 5000,
@@ -253,32 +261,18 @@ export async function POST(req: Request) {
           totalOrders = 0;
         }
 
-        // customergroups API로 회원 등급 조회
-        let customerGroup = null;
-        try {
-          console.log(`customergroups API로 회원 등급 조회: ${customer.member_id}`);
-          const groupRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customergroups/customers`, {
-            params: {
-              member_id: customer.member_id
-            },
-            headers: { Authorization: `Bearer ${access_token}` },
-            timeout: 3000,
-          });
-
-          if (groupRes.data.customers && groupRes.data.customers.length > 0) {
-            customerGroup = groupRes.data.customers[0];
-            console.log(`customergroups API 결과:`, customerGroup);
-          }
-        } catch (groupError) {
-          console.log(`customergroups API 실패: ${groupError instanceof Error ? groupError.message : String(groupError)}`);
+        // Lambda와 동일한 방식: group_no 필드 직접 사용
+        let finalGroupNo = customer.group_no;
+        if (finalGroupNo == null) {
+          finalGroupNo = customer.group?.group_no;
         }
-
-        // 회원 등급 정보 로깅
-        const finalGroupNo = customerGroup?.group_no || customer.group?.group_no || 1;
-        console.log(`회원 등급 정보 확인:`, {
+        if (finalGroupNo == null) {
+          finalGroupNo = 1; // 기본값
+        }
+        console.log(`회원 등급 정보 확인 (Lambda 방식):`, {
           member_id: customer.member_id,
-          customerGroup: customerGroup,
-          originalGroup: customer.group,
+          group_no: customer.group_no,
+          group_object: customer.group,
           finalGroupNo: finalGroupNo,
           finalGroupNo_type: typeof finalGroupNo
         });
