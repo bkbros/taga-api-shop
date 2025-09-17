@@ -29,7 +29,7 @@ export async function POST(req: Request) {
   try {
     const {
       spreadsheetId,
-      sheetId = 37633012,
+      sheetName = "Smore-5pURyYjo8l-HRG",
       serviceAccountKey,
       useEnvCredentials = false
     } = await req.json();
@@ -84,7 +84,7 @@ export async function POST(req: Request) {
     // 1. 스프레드시트에서 I, J열 (이름, 연락처) 읽기
     const sourceResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${sheetId}!I:J`, // I: 이름, J: 연락처
+      range: `${sheetName}!I:J`, // I: 이름, J: 연락처
     });
 
     const rows = sourceResponse.data.values;
@@ -228,7 +228,7 @@ export async function POST(req: Request) {
       // 각 행의 AC~AG 범위에 데이터 쓰기
       return sheets.spreadsheets.values.update({
         spreadsheetId,
-        range: `${sheetId}!AC${result.rowIndex}:AG${result.rowIndex}`,
+        range: `${sheetName}!AC${result.rowIndex}:AG${result.rowIndex}`,
         valueInputOption: 'USER_ENTERED',
         requestBody: {
           values: [rowData],

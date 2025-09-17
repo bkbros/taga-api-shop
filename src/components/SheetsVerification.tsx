@@ -20,7 +20,7 @@ export default function SheetsVerification() {
 
   // 폼 상태
   const [spreadsheetId, setSpreadsheetId] = useState("1i4zNovtQXwTz0wBUN6chhlqHe3yM_gVRwtC0H73stIg");
-  const [sheetId, setSheetId] = useState("37633012");
+  const [sheetName, setSheetName] = useState("Smore-5pURyYjo8l-HRG");
   const [serviceAccountKey, setServiceAccountKey] = useState("");
   const [useEnvCredentials, setUseEnvCredentials] = useState(true);
 
@@ -42,7 +42,7 @@ export default function SheetsVerification() {
         },
         body: JSON.stringify({
           spreadsheetId,
-          sheetId: parseInt(sheetId),
+          sheetName,
           serviceAccountKey: useEnvCredentials ? undefined : serviceAccountKey,
           useEnvCredentials,
         }),
@@ -88,16 +88,16 @@ export default function SheetsVerification() {
 
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">
-            시트 ID (gid)
+            시트 이름
           </label>
           <input
             type="text"
-            value={sheetId}
-            onChange={(e) => setSheetId(e.target.value)}
+            value={sheetName}
+            onChange={(e) => setSheetName(e.target.value)}
             className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
           <p className="text-xs text-gray-500 mt-1">
-            URL의 gid= 다음 숫자 (예: gid=37633012)
+            스프레드시트 하단의 탭 이름 (예: Smore-5pURyYjo8l-HRG)
           </p>
         </div>
 
