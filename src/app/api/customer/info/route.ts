@@ -2,10 +2,6 @@ import { NextResponse } from "next/server";
 import axios from "axios";
 import { loadParams } from "@/lib/ssm";
 
-type Order = {
-  order_status?: string;
-  order_price_amount?: string;
-};
 
 type Customer = {
   user_id: string;
@@ -99,7 +95,7 @@ export async function GET(req: Request) {
           });
 
           if (ordersRes.data.orders) {
-            totalPurchaseAmount = ordersRes.data.orders.reduce((sum: number, order: any) => {
+            totalPurchaseAmount = ordersRes.data.orders.reduce((sum: number, order: { order_price_amount?: string }) => {
               return sum + parseFloat(order.order_price_amount || "0");
             }, 0);
             console.log(`[COUNT API] 금액 계산 완료: ${totalPurchaseAmount}원`);
@@ -132,11 +128,11 @@ export async function GET(req: Request) {
         });
 
         if (ordersRes.data.orders) {
-          const completedOrders = ordersRes.data.orders.filter((order: any) =>
+          const completedOrders = ordersRes.data.orders.filter((order: { order_status?: string }) =>
             order.order_status === "N40" || order.order_status === "N50"
           );
           totalOrders = completedOrders.length;
-          totalPurchaseAmount = completedOrders.reduce((sum: number, order: any) => {
+          totalPurchaseAmount = completedOrders.reduce((sum: number, order: { order_price_amount?: string }) => {
             return sum + parseFloat(order.order_price_amount || "0");
           }, 0);
           console.log(`[FALLBACK] 성공: ${totalOrders}건, ${totalPurchaseAmount}원`);
