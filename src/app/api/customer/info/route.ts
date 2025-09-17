@@ -28,75 +28,48 @@ export async function GET(req: Request) {
     const { access_token } = await loadParams(["access_token"]);
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
 
-    // 1. Members API로 login_id 검색하여 정확한 member_id 획득
-    console.log(`[DEBUG] Searching member with login_id: ${userId}`);
+    // 1. Customers API로 user_id 검색하여 정확한 member_id 획득
+    console.log(`[DEBUG] Searching customer with user_id: ${userId}`);
 
     // URL 디코딩 처리
     const decodedUserId = decodeURIComponent(userId);
-    console.log(`[DEBUG] Decoded login_id: ${decodedUserId}`);
+    console.log(`[DEBUG] Decoded user_id: ${decodedUserId}`);
 
-    let memberRes;
+    let customerRes;
     let numericMemberId;
 
-    // Members API로 login_id 검색
+    // Customers API로 user_id 검색 (쇼핑몰 회원/고객 조회)
     try {
-      console.log(`[MEMBERS API] login_id로 검색: ${decodedUserId}`);
-      memberRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/members`, {
-        params: {
-          login_id: decodedUserId,
-          limit: 1
-        },
-        headers: { Authorization: `Bearer ${access_token}` },
-      });
-
-      if (memberRes.data.members && memberRes.data.members.length > 0) {
-        numericMemberId = memberRes.data.members[0].member_id;
-        console.log(`[MEMBERS API] 성공: 숫자형 member_id 획득: ${numericMemberId}`);
-      } else {
-        console.log(`[MEMBERS API] 회원을 찾을 수 없음`);
-        throw new Error('Member not found');
-      }
-    } catch (memberError) {
-      console.log(`[MEMBERS API] 실패:`, memberError instanceof Error ? memberError.message : String(memberError));
-      throw memberError;
-    }
-
-    // 2. 획득한 숫자형 member_id로 Customers API 호출
-    let customerRes;
-    try {
-      console.log(`[CUSTOMERS API] 숫자형 member_id로 검색: ${numericMemberId}`);
+      console.log(`[CUSTOMERS API] user_id로 검색: ${decodedUserId}`);
       customerRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
         params: {
-          member_id: numericMemberId,
+          user_id: decodedUserId, // @k 포함된 로그인 ID 그대로 사용
           limit: 1
         },
         headers: { Authorization: `Bearer ${access_token}` },
       });
-      console.log(`[CUSTOMERS API] 성공: 고객 정보 획득`);
+
+      if (customerRes.data.customers && customerRes.data.customers.length > 0) {
+        const customer = customerRes.data.customers[0];
+        numericMemberId = customer.member_id;
+        console.log(`[CUSTOMERS API] 성공: 숫자형 member_id 획득: ${numericMemberId}`);
+        console.log(`[CUSTOMERS API] 고객 정보:`, JSON.stringify(customer, null, 2));
+      } else {
+        console.log(`[CUSTOMERS API] 고객을 찾을 수 없음`);
+        throw new Error('Customer not found');
+      }
     } catch (customerError) {
       console.log(`[CUSTOMERS API] 실패:`, customerError instanceof Error ? customerError.message : String(customerError));
       throw customerError;
     }
 
-    console.log(`[FINAL CHECK] customerRes.data:`, JSON.stringify(customerRes.data, null, 2));
-    console.log(`[FINAL CHECK] customers 배열 길이:`, customerRes.data.customers?.length);
-
-    if (!customerRes.data.customers || customerRes.data.customers.length === 0) {
-      console.log(`[ERROR] 고객 데이터가 비어있음 - 404 반환`);
-      return NextResponse.json({
-        error: "Customer not found",
-        searchedId: userId,
-        responseData: customerRes.data
-      }, { status: 404 });
-    }
-
+    // customer 객체는 이미 위에서 획득했으므로 바로 사용
     const customer = customerRes.data.customers[0] as Customer;
 
-    // 2. Get customer's order statistics for total purchase amount
     console.log(`[DEBUG] Customer data:`, {
       member_id: customer.member_id,
       user_id: customer.user_id,
-      mallId: mallId
+      numericMemberId: numericMemberId
     });
 
     // 3. 획득한 숫자형 member_id로 주문 정보 조회
