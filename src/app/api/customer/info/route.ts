@@ -17,19 +17,6 @@ type Customer = {
   };
 };
 
-type CustomerSearchResult = {
-  member_id?: string;
-  user_id?: string;
-  member_no?: string | number;
-  user_name?: string;
-  created_date?: string;
-  email?: string;
-  phone?: string;
-  last_login_date?: string;
-  group?: {
-    group_name?: string;
-  };
-};
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
@@ -43,52 +30,30 @@ export async function GET(req: Request) {
   const decodedUserId = decodeURIComponent(userId);
   console.log(`[DEBUG] Decoded user_id: ${decodedUserId}`);
 
-  // 입력값 형태에 따라 검색 방법 결정 (2025-06-01 API 버전 기준)
-  const hasSpecialChar = /@|[a-zA-Z]/.test(decodedUserId); // @포함 또는 영문 포함
-  const isPhonePattern = /^01[0-9]{8,9}$/.test(decodedUserId); // 010으로 시작 10-11자리
-  const isNumericOnly = /^\d+$/.test(decodedUserId);
+  // 입력값 형태에 따라 검색 방법 결정 (2025-06-01 API 스펙 기준)
+  const isPhonePattern = /^01[0-9]{8,9}$/.test(decodedUserId); // 휴대폰 패턴만 cellphone으로
 
-  let searchParam: string;
-  let needsLegacyRetry = false;
-
-  if (hasSpecialChar) {
-    searchParam = 'member_id'; // @k123, user@domain 등
-  } else if (isPhonePattern) {
-    searchParam = 'cellphone'; // 01012345678
-  } else if (isNumericOnly) {
-    // 숫자만 있지만 휴대폰 패턴이 아님 → 레거시 재시도 필요
-    searchParam = 'member_id'; // 일단 시도
-    needsLegacyRetry = true;
+  // 파라미터 매핑: 휴대폰이면 cellphone, 그 외는 모두 member_id
+  const params: Record<string, string | number> = { limit: 1 };
+  if (isPhonePattern) {
+    params.cellphone = decodedUserId; // 휴대폰 전체번호
   } else {
-    searchParam = 'member_id'; // 기본값
+    params.member_id = decodedUserId; // 로그인 ID (@k, @n, 일반, 숫자ID 모두 포함)
   }
 
   try {
     const { access_token } = await loadParams(["access_token"]);
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
 
-    // 1. Customers API로 user_id 검색하여 정확한 member_id 획득
-    console.log(`[DEBUG] Searching customer with user_id: ${userId}`);
+    // 1. Customers API로 단일 검색 (2025-06-01 스펙 준수)
+    console.log(`[CUSTOMERS API] ${isPhonePattern ? 'cellphone' : 'member_id'}로 검색: ${decodedUserId} (${isPhonePattern ? '휴대폰' : '로그인 ID'})`);
 
     let customerRes;
     let memberLoginId; // member_id는 로그인 ID (문자열)
 
-    const getParamDescription = () => {
-      if (hasSpecialChar) return 'member_id (로그인 ID)';
-      if (isPhonePattern) return 'cellphone (휴대폰)';
-      if (needsLegacyRetry) return 'member_id (숫자 - 레거시 재시도 예정)';
-      return 'member_id (기본값)';
-    };
-
-    console.log(`[CUSTOMERS API] ${searchParam}로 검색: ${decodedUserId} (${getParamDescription()})`);
-
-    // 첫 번째 시도: 최신 API 버전
     try {
       customerRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
-        params: {
-          [searchParam]: decodedUserId,
-          limit: 1
-        },
+        params,
         headers: {
           Authorization: `Bearer ${access_token}`,
           'X-Cafe24-Api-Version': '2025-06-01'
@@ -109,135 +74,28 @@ export async function GET(req: Request) {
 
         console.log(`[CUSTOMERS API] 성공: member_id(로그인ID) 획득: ${memberLoginId}`);
         console.log(`[CUSTOMERS API] 고객 정보:`, JSON.stringify(customer, null, 2));
-      } else if (needsLegacyRetry) {
-        // 고객을 찾지 못했고 레거시 재시도가 필요한 경우
-        console.log(`[CUSTOMERS API] 최신 버전에서 고객 없음, 레거시 버전으로 재시도`);
-        throw new Error('Legacy retry needed');
       } else {
         console.log(`[CUSTOMERS API] 고객을 찾을 수 없음 - 404 반환`);
         return NextResponse.json({
           error: "Customer not found",
-          searchParam: searchParam,
-          searchValue: decodedUserId
+          tried: params,
+          hint: isPhonePattern
+            ? '휴대폰 번호가 맞는지 확인하세요 (01012345678 형식)'
+            : '로그인 ID가 맞는지 확인하세요 (@k123, user@domain, 일반ID 등)'
         }, { status: 404 });
       }
     } catch (customerError) {
       console.log(`[CUSTOMERS API] 실패:`, customerError instanceof Error ? customerError.message : String(customerError));
 
-      // 422 에러 또는 레거시 재시도가 필요한 경우
-      const isAxiosError = customerError instanceof Error && 'response' in customerError;
-      const is422Error = isAxiosError && (customerError as { response?: { status?: number } }).response?.status === 422;
-
-      if (is422Error) {
-        console.error(`[CUSTOMERS API 422] 상세 원인:`, (customerError as { response?: { data?: unknown } }).response?.data);
-      }
-
-      if ((is422Error || customerError instanceof Error && customerError.message === 'Legacy retry needed') && needsLegacyRetry) {
-        // 레거시 API 버전으로 재시도
-        console.log(`[LEGACY RETRY] 2024-01-01 버전으로 member_no/user_id 재시도`);
-
-        try {
-          let legacySuccess = false;
-
-          // 1차: member_id로 재시도 (레거시에서도 로그인 ID로 시도)
-          try {
-            console.log(`[LEGACY RETRY] 1차: member_id로 재시도`);
-            customerRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
-              params: {
-                member_id: decodedUserId,
-                limit: 1
-              },
-              headers: {
-                Authorization: `Bearer ${access_token}`,
-                'X-Cafe24-Api-Version': '2024-01-01'
-              },
-            });
-
-            if (customerRes.data.customers && customerRes.data.customers.length > 0) {
-              const customer = customerRes.data.customers[0];
-              memberLoginId = customer.member_id || customer.user_id;
-              console.log(`[LEGACY RETRY] 1차 성공: member_id로 고객 찾음, login_id: ${memberLoginId}`);
-              legacySuccess = true;
-            }
-          } catch (memberIdError) {
-            console.log(`[LEGACY RETRY] 1차 실패: member_id 에러 - ${memberIdError instanceof Error ? memberIdError.message : String(memberIdError)}`);
-          }
-
-          // 2차: user_id로 재시도
-          if (!legacySuccess) {
-            try {
-              console.log(`[LEGACY RETRY] 2차: user_id로 재시도`);
-              customerRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
-                params: {
-                  user_id: decodedUserId,
-                  limit: 1
-                },
-                headers: {
-                  Authorization: `Bearer ${access_token}`,
-                  'X-Cafe24-Api-Version': '2024-01-01'
-                },
-              });
-
-              if (customerRes.data.customers && customerRes.data.customers.length > 0) {
-                const customer = customerRes.data.customers[0];
-                memberLoginId = customer.member_id || customer.user_id;
-                console.log(`[LEGACY RETRY] 2차 성공: user_id로 고객 찾음, login_id: ${memberLoginId}`);
-                legacySuccess = true;
-              }
-            } catch (userIdError) {
-              console.log(`[LEGACY RETRY] 2차 실패: user_id 에러 - ${userIdError instanceof Error ? userIdError.message : String(userIdError)}`);
-            }
-          }
-
-          // 3차: 전체 목록에서 수동 검색 (최후의 수단)
-          if (!legacySuccess) {
-            try {
-              console.log(`[LEGACY RETRY] 3차: 전체 목록에서 수동 검색`);
-              customerRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
-                params: {
-                  limit: 100
-                },
-                headers: {
-                  Authorization: `Bearer ${access_token}`,
-                  'X-Cafe24-Api-Version': '2024-01-01'
-                },
-              });
-
-              if (customerRes.data.customers) {
-                const foundCustomer = customerRes.data.customers.find((customer: CustomerSearchResult) =>
-                  customer.member_id === decodedUserId ||
-                  customer.user_id === decodedUserId ||
-                  customer.member_no === decodedUserId ||
-                  String(customer.member_no) === decodedUserId
-                );
-
-                if (foundCustomer) {
-                  memberLoginId = foundCustomer.member_id || foundCustomer.user_id;
-                  customerRes.data.customers = [foundCustomer]; // 찾은 고객만 설정
-                  console.log(`[LEGACY RETRY] 3차 성공: 전체 목록에서 고객 찾음, login_id: ${memberLoginId}`);
-                  legacySuccess = true;
-                }
-              }
-            } catch (searchError) {
-              console.log(`[LEGACY RETRY] 3차 실패: 전체 검색 에러 - ${searchError instanceof Error ? searchError.message : String(searchError)}`);
-            }
-          }
-
-          if (!legacySuccess) {
-            console.log(`[LEGACY RETRY] 모든 재시도 실패: 고객을 찾을 수 없음`);
-            return NextResponse.json({
-              error: "Customer not found in all retry attempts",
-              searchValue: decodedUserId,
-              attempts: ["modern API member_id", "legacy member_id", "legacy user_id", "legacy full search"]
-            }, { status: 404 });
-          }
-        } catch (legacyError) {
-          console.log(`[LEGACY RETRY] 예외 발생:`, legacyError instanceof Error ? legacyError.message : String(legacyError));
-          throw customerError; // 원래 에러를 throw
+      // 422 에러 상세 로그
+      if (customerError instanceof Error && 'response' in customerError) {
+        const axiosError = customerError as { response?: { status?: number; data?: unknown } };
+        if (axiosError.response?.status === 422) {
+          console.error(`[CUSTOMERS API 422] 상세 원인:`, axiosError.response?.data);
         }
-      } else {
-        throw customerError;
       }
+
+      throw customerError;
     }
 
     // customer 객체 안전성 검증
@@ -257,57 +115,52 @@ export async function GET(req: Request) {
       memberLoginId: memberLoginId
     });
 
-    // 3. 획득한 member_id(로그인ID)로 주문 정보 조회
+    // 2. 주문 정보 조회 (member_id로 조회)
     let totalOrders = 0;
     let totalPurchaseAmount = 0;
 
     try {
-      console.log(`[ORDERS API] member_id(로그인ID)로 주문 조회: ${memberLoginId}`);
+      console.log(`[ORDERS API] member_id로 주문 조회: ${memberLoginId}`);
 
       const endDate = new Date().toISOString().split('T')[0];
       const startDate = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
-      // Orders Count API로 완료된 주문 건수 조회
+      // Orders Count API
       const countRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders/count`, {
         params: {
           shop_no: 1,
           start_date: startDate,
           end_date: endDate,
-          member_id: memberLoginId, // member_id는 로그인 ID (문자열)
-          order_status: "N40,N50" // 배송완료, 구매확정
+          member_id: memberLoginId,
+          order_status: "N40,N50"
         },
         headers: { Authorization: `Bearer ${access_token}` },
         timeout: 5000
       });
 
       totalOrders = countRes.data.count || 0;
-      console.log(`[ORDERS API] 성공: ${totalOrders}건`);
+      console.log(`[ORDERS API] 주문 건수: ${totalOrders}건`);
 
-      // 금액은 별도로 조회 (소량의 데이터만)
+      // 구매 금액 조회 (필요시 페이지네이션)
       if (totalOrders > 0) {
-        try {
-          const ordersRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
-            params: {
-              shop_no: 1,
-              start_date: startDate,
-              end_date: endDate,
-              member_id: memberLoginId, // member_id는 로그인 ID (문자열)
-              order_status: "N40,N50",
-              limit: 50 // 최근 50건만
-            },
-            headers: { Authorization: `Bearer ${access_token}` },
-            timeout: 5000
-          });
+        const ordersRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
+          params: {
+            shop_no: 1,
+            start_date: startDate,
+            end_date: endDate,
+            member_id: memberLoginId,
+            order_status: "N40,N50",
+            limit: 50
+          },
+          headers: { Authorization: `Bearer ${access_token}` },
+          timeout: 5000
+        });
 
-          if (ordersRes.data.orders) {
-            totalPurchaseAmount = ordersRes.data.orders.reduce((sum: number, order: { order_price_amount?: string }) => {
-              return sum + parseFloat(order.order_price_amount || "0");
-            }, 0);
-            console.log(`[ORDERS API] 금액 계산 완료: ${totalPurchaseAmount}원`);
-          }
-        } catch (amountError) {
-          console.log(`[ORDERS API] 금액 조회 실패, 건수만 사용: ${amountError instanceof Error ? amountError.message : String(amountError)}`);
-          totalPurchaseAmount = 0;
+        if (ordersRes.data.orders) {
+          totalPurchaseAmount = ordersRes.data.orders.reduce((sum: number, order: { order_price_amount?: string }) => {
+            return sum + parseFloat(order.order_price_amount || "0");
+          }, 0);
+          console.log(`[ORDERS API] 구매 금액: ${totalPurchaseAmount}원`);
         }
       }
 
