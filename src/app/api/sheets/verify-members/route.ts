@@ -229,14 +229,14 @@ export async function POST(req: Request) {
           continue;
         }
 
+        // 카카오/네이버 회원의 경우 member_id에서 @k, @n 제거
+        const cleanMemberId = customer.member_id?.replace(/@[kn]$/, '') || customer.member_id;
+
         // 주문 건수만 간단히 조회 (422 에러 방지)
         let totalOrders = 0;
 
         try {
           console.log(`주문 건수 조회 시작: ${customer.member_id}`);
-
-          // 카카오/네이버 회원의 경우 member_id에서 @k, @n 제거
-          const cleanMemberId = customer.member_id?.replace(/@[kn]$/, '') || customer.member_id;
           console.log(`정리된 member_id: ${cleanMemberId}`);
 
           // 날짜 범위 추가 (필수 파라미터)
