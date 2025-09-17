@@ -230,7 +230,7 @@ export async function POST(req: Request) {
         }
 
         // 주문 건수 조회 임시 비활성화 (422 에러 해결될 때까지)
-        let totalOrders = 0;
+        const totalOrders = 0;
         console.log(`회원 정보 저장: ${customer.member_id} (주문 조회는 현재 비활성화)`);
 
         verificationResults.push({
