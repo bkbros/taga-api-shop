@@ -131,6 +131,10 @@ export async function POST(req: Request) {
     console.log(`파싱된 회원 수: ${members.length}`);
     console.log("첫 3개 회원:", members.slice(0, 3));
 
+    // 처리할 회원 수 제한 (테스트용으로 5명만 먼저 처리)
+    const limitedMembers = members.slice(0, 5);
+    console.log(`실제 처리할 회원 수: ${limitedMembers.length}명 (제한 적용)`);
+
     // 2. Cafe24 API로 각 회원 정보 검증
     console.log("Cafe24 API 토큰 로드 시작");
     const { access_token } = await loadParams(["access_token"]);
@@ -139,7 +143,7 @@ export async function POST(req: Request) {
 
     const verificationResults: VerificationResult[] = [];
 
-    for (const member of members) {
+    for (const member of limitedMembers) {
       console.log(`회원 검증 시작: ${member.name} (${member.phone})`);
       try {
         // Cafe24에서 회원 정보 조회 - 이름 또는 연락처로 검색
@@ -155,6 +159,7 @@ export async function POST(req: Request) {
               embed: "group"
             },
             headers: { Authorization: `Bearer ${access_token}` },
+            timeout: 5000, // 5초 타임아웃
           });
           console.log(`전화번호 검색 결과: ${phoneSearchRes.data.customers?.length || 0}건`);
 
@@ -175,6 +180,7 @@ export async function POST(req: Request) {
               embed: "group"
             },
             headers: { Authorization: `Bearer ${access_token}` },
+            timeout: 5000, // 5초 타임아웃
           });
 
           if (nameSearchRes.data.customers && nameSearchRes.data.customers.length > 0) {
@@ -201,6 +207,7 @@ export async function POST(req: Request) {
             embed: "items"
           },
           headers: { Authorization: `Bearer ${access_token}` },
+          timeout: 10000, // 10초 타임아웃 (주문 데이터가 많을 수 있음)
         });
 
         // 완료된 주문만 집계
@@ -245,8 +252,8 @@ export async function POST(req: Request) {
 
       console.log(`회원 검증 완료: ${member.name}`);
 
-      // API 호출 제한을 위한 딜레이
-      await new Promise(resolve => setTimeout(resolve, 100));
+      // API 호출 제한을 위한 딜레이 (500ms로 증가)
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
 
     console.log(`모든 회원 검증 완료. 총 ${verificationResults.length}건`);
