@@ -237,37 +237,62 @@ export async function POST(req: Request) {
           continue;
         }
 
-        // customer/info API 방식: member_id로 직접 주문 조회
+        // API 문서 기준으로 수정: 필수 파라미터 추가
         let totalOrders = 0;
 
         try {
-          console.log(`customer/info 방식 주문 조회 시작: ${customer.member_id}`);
+          console.log(`API 문서 기준 주문 조회 시작: ${customer.member_id}`);
 
-          // customer/info와 동일한 방식
+          // 날짜 범위 설정 (필수 파라미터)
+          const endDate = new Date().toISOString().split('T')[0];
+          const startDate = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+          // API 문서 기준 필수 파라미터 포함
           const ordersRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
             params: {
-              member_id: customer.member_id, // @k 포함된 member_id 그대로 사용
-              limit: 200, // customer/info보다 적게 (API 제한 고려)
-              embed: "items" // customer/info와 동일
+              member_id: customer.member_id,
+              start_date: startDate,  // 필수
+              end_date: endDate,      // 필수
+              shop_no: 1,            // 필수 (기본값)
+              limit: 100,
+              offset: 0
             },
             headers: { Authorization: `Bearer ${access_token}` },
-            timeout: 8000,
+            timeout: 10000,
           });
 
           if (ordersRes.data.orders) {
-            // customer/info와 동일: 완료된 주문만 집계 (N40: 배송완료, N50: 구매확정)
+            // 완료된 주문만 집계 (N40: 배송완료, N50: 구매확정)
             const completedOrders = ordersRes.data.orders.filter((order: { order_status?: string }) =>
               order.order_status === "N40" || order.order_status === "N50"
             );
             totalOrders = completedOrders.length;
-            console.log(`customer/info 방식 성공: 전체 ${ordersRes.data.orders.length}건 중 완료 ${totalOrders}건`);
+            console.log(`API 문서 기준 성공: 전체 ${ordersRes.data.orders.length}건 중 완료 ${totalOrders}건`);
           } else {
             totalOrders = 0;
           }
 
         } catch (orderError) {
-          console.log(`customer/info 방식 실패 (0으로 처리): ${orderError instanceof Error ? orderError.message : String(orderError)}`);
-          totalOrders = 0;
+          console.log(`API 문서 기준 실패, 대안 시도: ${orderError instanceof Error ? orderError.message : String(orderError)}`);
+
+          // 대안: 직접 /api/customer/info 호출 (검증된 방법)
+          try {
+            const userId = customer.member_id?.split("@")[0] || customer.member_id;
+            console.log(`대안: /api/customer/info 호출 (user_id: ${userId})`);
+
+            const infoRes = await axios.get(`${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/api/customer/info`, {
+              params: { user_id: userId },
+              timeout: 15000,
+            });
+
+            if (infoRes.status === 200) {
+              totalOrders = infoRes.data.totalOrders || 0;
+              console.log(`/api/customer/info 성공: ${totalOrders}건`);
+            }
+          } catch (infoError) {
+            console.log(`/api/customer/info도 실패: ${infoError instanceof Error ? infoError.message : String(infoError)}`);
+            totalOrders = 0;
+          }
         }
 
         // Lambda와 동일한 방식: group_no 필드 직접 사용
