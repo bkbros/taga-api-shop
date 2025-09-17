@@ -157,7 +157,7 @@ export async function POST(req: Request) {
               params: {
                 cellphone: cleanPhone,
                 limit: 10,
-                embed: "group"
+                embed: "group,group_no"
               },
               headers: { Authorization: `Bearer ${access_token}` },
               timeout: 5000,
@@ -180,7 +180,7 @@ export async function POST(req: Request) {
               params: {
                 phone: member.phone,
                 limit: 10,
-                embed: "group"
+                embed: "group,group_no"
               },
               headers: { Authorization: `Bearer ${access_token}` },
               timeout: 5000,
@@ -203,7 +203,7 @@ export async function POST(req: Request) {
               params: {
                 user_name: member.name,
                 limit: 10,
-                embed: "group"
+                embed: "group,group_no"
               },
               headers: { Authorization: `Bearer ${access_token}` },
               timeout: 5000,
@@ -253,13 +253,34 @@ export async function POST(req: Request) {
           totalOrders = 0;
         }
 
+        // customergroups API로 회원 등급 조회
+        let customerGroup = null;
+        try {
+          console.log(`customergroups API로 회원 등급 조회: ${customer.member_id}`);
+          const groupRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customergroups/customers`, {
+            params: {
+              member_id: customer.member_id
+            },
+            headers: { Authorization: `Bearer ${access_token}` },
+            timeout: 3000,
+          });
+
+          if (groupRes.data.customers && groupRes.data.customers.length > 0) {
+            customerGroup = groupRes.data.customers[0];
+            console.log(`customergroups API 결과:`, customerGroup);
+          }
+        } catch (groupError) {
+          console.log(`customergroups API 실패: ${groupError instanceof Error ? groupError.message : String(groupError)}`);
+        }
+
         // 회원 등급 정보 로깅
+        const finalGroupNo = customerGroup?.group_no || customer.group?.group_no || 1;
         console.log(`회원 등급 정보 확인:`, {
           member_id: customer.member_id,
-          group: customer.group,
-          group_no: customer.group?.group_no,
-          group_name: customer.group?.group_name,
-          group_no_type: typeof customer.group?.group_no
+          customerGroup: customerGroup,
+          originalGroup: customer.group,
+          finalGroupNo: finalGroupNo,
+          finalGroupNo_type: typeof finalGroupNo
         });
 
         verificationResults.push({
@@ -270,7 +291,7 @@ export async function POST(req: Request) {
           cafe24Data: {
             userId: customer.user_id || customer.member_id || "", // 실제 user_id 우선, 없으면 member_id
             userName: customer.user_name || "",
-            memberGrade: customer.group?.group_no ? parseInt(customer.group.group_no.toString()) : 1, // 숫자 등급 변환
+            memberGrade: finalGroupNo ? parseInt(finalGroupNo.toString()) : 1, // customergroups API 결과 우선 사용
             joinDate: customer.created_date || "",
             totalOrders, // 구매 건수
           },
