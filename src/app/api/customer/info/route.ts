@@ -35,18 +35,25 @@ export async function GET(req: Request) {
     const decodedUserId = decodeURIComponent(userId);
     console.log(`[DEBUG] Decoded user_id: ${decodedUserId}`);
 
+    // 입력값 형태에 따라 검색 방법 결정
+    const isNumericId = /^\d+$/.test(decodedUserId);
+    const searchParam = isNumericId ? 'member_id' : 'user_id';
+
     let customerRes;
     let numericMemberId;
 
-    // Customers API로 user_id 검색 (쇼핑몰 회원/고객 조회)
+    console.log(`[CUSTOMERS API] ${searchParam}로 검색: ${decodedUserId} (${isNumericId ? '숫자 PK' : '로그인 ID'})`);
+
     try {
-      console.log(`[CUSTOMERS API] user_id로 검색: ${decodedUserId}`);
       customerRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
         params: {
-          user_id: decodedUserId, // @k 포함된 로그인 ID 그대로 사용
+          [searchParam]: decodedUserId, // 숫자면 member_id, 문자열이면 user_id
           limit: 1
         },
-        headers: { Authorization: `Bearer ${access_token}` },
+        headers: {
+          Authorization: `Bearer ${access_token}`,
+          'X-Cafe24-Api-Version': '2025-06-01' // API 버전 헤더 추가
+        },
       });
 
       if (customerRes.data.customers && customerRes.data.customers.length > 0) {
@@ -164,10 +171,13 @@ export async function GET(req: Request) {
       });
 
       if (axiosError.response?.status === 422) {
+        console.error(`[422 ERROR] 상세 원인:`, axiosError.response?.data);
         return NextResponse.json({
           error: "Invalid request parameters",
           details: axiosError.response?.data,
-          requestedUserId: userId
+          requestedUserId: userId,
+          decodedUserId: decodedUserId,
+          searchParam: isNumericId ? 'member_id' : 'user_id'
         }, { status: 422 });
       }
 
