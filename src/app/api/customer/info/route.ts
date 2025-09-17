@@ -44,7 +44,7 @@ export async function GET(req: Request) {
         headers: { Authorization: `Bearer ${access_token}` },
       });
       console.log(`[TRY1] 성공: member_id로 고객 찾음`);
-    } catch (memberIdError) {
+    } catch {
       console.log(`[TRY1] 실패: member_id 검색 에러`);
 
       // 방법 2: user_id로 검색 시도
@@ -72,7 +72,7 @@ export async function GET(req: Request) {
             headers: { Authorization: `Bearer ${access_token}` },
           });
           console.log(`[TRY3] 성공: phone으로 고객 찾음`);
-        } catch (phoneError) {
+        } catch {
           console.log(`[TRY3] 실패: phone 검색 에러`);
           throw userIdError; // 원래 user_id 에러를 throw
         }
