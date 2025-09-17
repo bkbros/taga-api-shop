@@ -128,19 +128,26 @@ export async function POST(req: Request) {
       rowIndex: index + 2, // 헤더 제외하고 실제 행 번호 (1-based + 헤더 1행)
     })).filter(member => member.name && member.phone); // 이름과 연락처가 모두 있는 것만
 
+    console.log(`파싱된 회원 수: ${members.length}`);
+    console.log("첫 3개 회원:", members.slice(0, 3));
+
     // 2. Cafe24 API로 각 회원 정보 검증
+    console.log("Cafe24 API 토큰 로드 시작");
     const { access_token } = await loadParams(["access_token"]);
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
+    console.log(`Cafe24 토큰 로드 완료, Mall ID: ${mallId}`);
 
     const verificationResults: VerificationResult[] = [];
 
     for (const member of members) {
+      console.log(`회원 검증 시작: ${member.name} (${member.phone})`);
       try {
         // Cafe24에서 회원 정보 조회 - 이름 또는 연락처로 검색
         let customer = null;
 
         // 1. 연락처로 검색 (전화번호 기준)
         if (member.phone) {
+          console.log(`전화번호로 검색: ${member.phone}`);
           const phoneSearchRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
             params: {
               phone: member.phone,
@@ -149,6 +156,7 @@ export async function POST(req: Request) {
             },
             headers: { Authorization: `Bearer ${access_token}` },
           });
+          console.log(`전화번호 검색 결과: ${phoneSearchRes.data.customers?.length || 0}건`);
 
           if (phoneSearchRes.data.customers && phoneSearchRes.data.customers.length > 0) {
             // 이름도 매칭되는지 확인
@@ -235,12 +243,17 @@ export async function POST(req: Request) {
         });
       }
 
+      console.log(`회원 검증 완료: ${member.name}`);
+
       // API 호출 제한을 위한 딜레이
       await new Promise(resolve => setTimeout(resolve, 100));
     }
 
+    console.log(`모든 회원 검증 완료. 총 ${verificationResults.length}건`);
+
     // 3. 검증 결과를 AC~AG열에 쓰기
     // AC: 회원ID, AD: 가입여부, AE: 회원등급, AF: 가입일, AG: 총구매금액
+    console.log("스프레드시트에 결과 쓰기 시작");
 
     // 각 행별로 개별 업데이트 (행별로 다른 위치에 써야 하므로)
     const updatePromises = verificationResults.map(async (result) => {
@@ -265,11 +278,19 @@ export async function POST(req: Request) {
 
     // 모든 업데이트 병렬 실행
     await Promise.all(updatePromises);
+    console.log("스프레드시트 결과 쓰기 완료");
 
     // 4. 통계 정보 반환
     const registeredCount = verificationResults.filter(r => r.isRegistered).length;
     const unregisteredCount = verificationResults.filter(r => !r.isRegistered).length;
     const errorCount = verificationResults.filter(r => r.error).length;
+
+    console.log("최종 응답 생성:", {
+      total: verificationResults.length,
+      registered: registeredCount,
+      unregistered: unregisteredCount,
+      errors: errorCount
+    });
 
     return NextResponse.json({
       success: true,
