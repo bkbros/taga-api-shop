@@ -1,6 +1,5 @@
 "use client";
 
-import SyncButton from "components/SyncButton";
 import SheetsVerification from "@/components/SheetsVerification";
 import { useState } from "react";
 
