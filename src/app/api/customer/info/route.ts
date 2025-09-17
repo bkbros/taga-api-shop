@@ -26,19 +26,31 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "user_id parameter is required" }, { status: 400 });
   }
 
-  // URL 디코딩 처리 (최상위 스코프로 이동)
-  const decodedUserId = decodeURIComponent(userId);
-  console.log(`[DEBUG] Decoded user_id: ${decodedUserId}`);
+  // 전처리
+  const raw = decodeURIComponent(userId).trim();
+  console.log(`[DEBUG] Raw input: ${raw}`);
 
-  // 입력값 형태에 따라 검색 방법 결정 (2025-06-01 API 스펙 기준)
-  const isPhonePattern = /^01[0-9]{8,9}$/.test(decodedUserId); // 휴대폰 패턴만 cellphone으로
+  const digits = raw.replace(/\D/g, "");
+  const isPhone = /^0\d{9,10}$/.test(digits);
 
-  // 파라미터 매핑: 휴대폰이면 cellphone, 그 외는 모두 member_id
+  // 파라미터 구성
   const params: Record<string, string | number> = { limit: 1 };
-  if (isPhonePattern) {
-    params.cellphone = decodedUserId; // 휴대폰 전체번호
+  if (isPhone) {
+    params.cellphone = digits; // 하이픈 제거된 전체번호
+    console.log(`[DEBUG] 휴대폰 번호로 인식: ${digits}`);
   } else {
-    params.member_id = decodedUserId; // 로그인 ID (@k, @n, 일반, 숫자ID 모두 포함)
+    if (/^\d+$/.test(raw)) {
+      // 숫자-only인데 휴대폰이 아님 => 지원 불가 식별자
+      console.log(`[ERROR] 지원하지 않는 식별자: ${raw} (숫자-only but not phone)`);
+      return NextResponse.json({
+        error: "Unsupported identifier",
+        hint: "member_id(로그인 아이디)나 휴대폰 번호(010...)를 전달하세요.",
+        received: raw,
+        examples: ["@k123456", "user@domain.com", "01012345678"]
+      }, { status: 400 });
+    }
+    params.member_id = raw;    // 로그인 ID(@k/@n/일반ID/숫자로그인ID 포함)
+    console.log(`[DEBUG] member_id로 인식: ${raw}`);
   }
 
   try {
@@ -46,7 +58,7 @@ export async function GET(req: Request) {
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
 
     // 1. Customers API로 단일 검색 (2025-06-01 스펙 준수)
-    console.log(`[CUSTOMERS API] ${isPhonePattern ? 'cellphone' : 'member_id'}로 검색: ${decodedUserId} (${isPhonePattern ? '휴대폰' : '로그인 ID'})`);
+    console.log(`[CUSTOMERS API] ${isPhone ? 'cellphone' : 'member_id'}로 검색: ${isPhone ? digits : raw} (${isPhone ? '휴대폰' : '로그인 ID'})`);
 
     let customerRes;
     let memberLoginId; // member_id는 로그인 ID (문자열)
@@ -79,8 +91,8 @@ export async function GET(req: Request) {
         return NextResponse.json({
           error: "Customer not found",
           tried: params,
-          hint: isPhonePattern
-            ? '휴대폰 번호가 맞는지 확인하세요 (01012345678 형식)'
+          hint: isPhone
+            ? '휴대폰 번호가 맞는지 확인하세요 (010xxxxxxxx 형식)'
             : '로그인 ID가 맞는지 확인하세요 (@k123, user@domain, 일반ID 등)'
         }, { status: 404 });
       }
@@ -207,8 +219,8 @@ export async function GET(req: Request) {
           error: "Invalid request parameters",
           details: axiosError.response?.data,
           requestedUserId: userId,
-          decodedUserId: decodedUserId,
-          searchParam: isPhonePattern ? 'cellphone' : 'member_id'
+          decodedUserId: raw,
+          searchParam: isPhone ? 'cellphone' : 'member_id'
         }, { status: 422 });
       }
 
