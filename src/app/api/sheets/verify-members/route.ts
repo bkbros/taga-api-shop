@@ -19,7 +19,6 @@ type VerificationResult = {
     userName?: string;
     memberGrade: string;
     joinDate?: string;
-    totalPurchaseAmount: number;
     totalOrders: number;
   };
   error?: string;
@@ -131,8 +130,8 @@ export async function POST(req: Request) {
     console.log(`파싱된 회원 수: ${members.length}`);
     console.log("첫 3개 회원:", members.slice(0, 3));
 
-    // 처리할 회원 수 제한 (테스트용으로 5명만 먼저 처리)
-    const limitedMembers = members.slice(0, 5);
+    // 처리할 회원 수 제한 (단계적 증가: 10명)
+    const limitedMembers = members.slice(0, 10);
     console.log(`실제 처리할 회원 수: ${limitedMembers.length}명 (제한 적용)`);
 
     // 2. Cafe24 API로 각 회원 정보 검증
@@ -146,45 +145,76 @@ export async function POST(req: Request) {
     for (const member of limitedMembers) {
       console.log(`회원 검증 시작: ${member.name} (${member.phone})`);
       try {
-        // Cafe24에서 회원 정보 조회 - 이름 또는 연락처로 검색
+        // Cafe24에서 회원 정보 조회 - 다양한 방법으로 검색
         let customer = null;
 
-        // 1. 연락처로 검색 (전화번호 기준)
-        if (member.phone) {
-          console.log(`전화번호로 검색: ${member.phone}`);
-          const phoneSearchRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
-            params: {
-              phone: member.phone,
-              limit: 10,
-              embed: "group"
-            },
-            headers: { Authorization: `Bearer ${access_token}` },
-            timeout: 5000, // 5초 타임아웃
-          });
-          console.log(`전화번호 검색 결과: ${phoneSearchRes.data.customers?.length || 0}건`);
+        // 1. cellphone으로 검색 (하이픈 제거한 숫자만)
+        const cleanPhone = member.phone.replace(/\D/g, "");
+        if (cleanPhone) {
+          console.log(`cellphone으로 검색: ${cleanPhone}`);
+          try {
+            const cellphoneRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
+              params: {
+                cellphone: cleanPhone,
+                limit: 10,
+                embed: "group"
+              },
+              headers: { Authorization: `Bearer ${access_token}` },
+              timeout: 5000,
+            });
+            console.log(`cellphone 검색 결과: ${cellphoneRes.data.customers?.length || 0}건`);
 
-          if (phoneSearchRes.data.customers && phoneSearchRes.data.customers.length > 0) {
-            // 이름도 매칭되는지 확인
-            customer = phoneSearchRes.data.customers.find((c: { user_name?: string }) =>
-              c.user_name && c.user_name.includes(member.name)
-            ) || phoneSearchRes.data.customers[0];
+            if (cellphoneRes.data.customers && cellphoneRes.data.customers.length > 0) {
+              customer = cellphoneRes.data.customers[0];
+            }
+          } catch (error) {
+            console.log(`cellphone 검색 실패: ${error instanceof Error ? error.message : String(error)}`);
           }
         }
 
-        // 2. 연락처로 찾지 못했으면 이름으로 검색
-        if (!customer && member.name) {
-          const nameSearchRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
-            params: {
-              user_name: member.name,
-              limit: 10,
-              embed: "group"
-            },
-            headers: { Authorization: `Bearer ${access_token}` },
-            timeout: 5000, // 5초 타임아웃
-          });
+        // 2. phone으로 검색 (원본 형태)
+        if (!customer && member.phone) {
+          console.log(`phone으로 검색: ${member.phone}`);
+          try {
+            const phoneSearchRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
+              params: {
+                phone: member.phone,
+                limit: 10,
+                embed: "group"
+              },
+              headers: { Authorization: `Bearer ${access_token}` },
+              timeout: 5000,
+            });
+            console.log(`phone 검색 결과: ${phoneSearchRes.data.customers?.length || 0}건`);
 
-          if (nameSearchRes.data.customers && nameSearchRes.data.customers.length > 0) {
-            customer = nameSearchRes.data.customers[0];
+            if (phoneSearchRes.data.customers && phoneSearchRes.data.customers.length > 0) {
+              customer = phoneSearchRes.data.customers[0];
+            }
+          } catch (error) {
+            console.log(`phone 검색 실패: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+
+        // 3. 이름으로 검색
+        if (!customer && member.name) {
+          console.log(`이름으로 검색: ${member.name}`);
+          try {
+            const nameSearchRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
+              params: {
+                user_name: member.name,
+                limit: 10,
+                embed: "group"
+              },
+              headers: { Authorization: `Bearer ${access_token}` },
+              timeout: 5000,
+            });
+            console.log(`이름 검색 결과: ${nameSearchRes.data.customers?.length || 0}건`);
+
+            if (nameSearchRes.data.customers && nameSearchRes.data.customers.length > 0) {
+              customer = nameSearchRes.data.customers[0];
+            }
+          } catch (error) {
+            console.log(`이름 검색 실패: ${error instanceof Error ? error.message : String(error)}`);
           }
         }
 
@@ -199,30 +229,26 @@ export async function POST(req: Request) {
           continue;
         }
 
-        // 주문 통계 조회
-        const ordersRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
-          params: {
-            member_id: customer.member_id,
-            limit: 1000,
-            embed: "items"
-          },
-          headers: { Authorization: `Bearer ${access_token}` },
-          timeout: 10000, // 10초 타임아웃 (주문 데이터가 많을 수 있음)
-        });
-
-        // 완료된 주문만 집계
-        let totalPurchaseAmount = 0;
+        // 주문 건수만 간단히 조회 (타임아웃 방지)
         let totalOrders = 0;
 
-        if (ordersRes.data.orders) {
-          const completedOrders = ordersRes.data.orders.filter((order: { order_status?: string }) =>
-            order.order_status === "N40" || order.order_status === "N50"
-          );
+        try {
+          console.log(`주문 건수 조회 시작: ${customer.member_id}`);
+          const ordersRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
+            params: {
+              member_id: customer.member_id,
+              limit: 50, // 최근 50건만 조회로 축소
+              order_status: "N40,N50" // 완료된 주문만
+            },
+            headers: { Authorization: `Bearer ${access_token}` },
+            timeout: 3000, // 3초로 단축
+          });
 
-          totalOrders = completedOrders.length;
-          totalPurchaseAmount = completedOrders.reduce((sum: number, order: { order_price_amount?: string }) => {
-            return sum + parseFloat(order.order_price_amount || "0");
-          }, 0);
+          totalOrders = ordersRes.data.orders?.length || 0;
+          console.log(`주문 건수 조회 결과: ${totalOrders}건`);
+        } catch (orderError) {
+          console.log(`주문 조회 에러 (건수는 0으로 처리): ${orderError instanceof Error ? orderError.message : String(orderError)}`);
+          totalOrders = 0;
         }
 
         verificationResults.push({
@@ -231,12 +257,11 @@ export async function POST(req: Request) {
           phone: member.phone,
           isRegistered: true,
           cafe24Data: {
-            userId: customer.user_id,
-            userName: customer.user_name,
+            userId: customer.user_id || "",
+            userName: customer.user_name || "",
             memberGrade: customer.group?.group_name || "일반회원",
-            joinDate: customer.created_date,
-            totalPurchaseAmount,
-            totalOrders,
+            joinDate: customer.created_date || "",
+            totalOrders, // 구매 건수
           },
         });
 
@@ -252,8 +277,8 @@ export async function POST(req: Request) {
 
       console.log(`회원 검증 완료: ${member.name}`);
 
-      // API 호출 제한을 위한 딜레이 (500ms로 증가)
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // API 호출 제한을 위한 딜레이 (200ms로 단축)
+      await new Promise(resolve => setTimeout(resolve, 200));
     }
 
     console.log(`모든 회원 검증 완료. 총 ${verificationResults.length}건`);
@@ -265,11 +290,11 @@ export async function POST(req: Request) {
     // 각 행별로 개별 업데이트 (행별로 다른 위치에 써야 하므로)
     const updatePromises = verificationResults.map(async (result) => {
       const rowData = [
-        result.cafe24Data?.userId || "", // AC: 회원ID
-        result.isRegistered ? "O" : "X", // AD: 가입여부
-        result.cafe24Data?.memberGrade || "", // AE: 회원등급
-        result.cafe24Data?.joinDate ? new Date(result.cafe24Data.joinDate).toLocaleDateString('ko-KR') : "", // AF: 가입일
-        result.cafe24Data?.totalPurchaseAmount || 0, // AG: 총구매금액
+        result.isRegistered ? "⭕" : "❌", // AC: 가입여부
+        result.cafe24Data?.userId || "", // AD: 아이디
+        result.cafe24Data?.memberGrade || "", // AE: 등급
+        result.cafe24Data?.joinDate ? result.cafe24Data.joinDate.split('T')[0] : "", // AF: 가입날짜 (YYYY-MM-DD)
+        result.cafe24Data?.totalOrders || 0, // AG: 구매건수
       ];
 
       // 각 행의 AC~AG 범위에 데이터 쓰기
