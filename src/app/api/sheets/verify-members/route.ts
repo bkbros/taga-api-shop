@@ -229,43 +229,9 @@ export async function POST(req: Request) {
           continue;
         }
 
-        // 카카오/네이버 회원의 경우 member_id에서 @k, @n 제거
-        const cleanMemberId = customer.member_id?.replace(/@[kn]$/, '') || customer.member_id;
-
-        // 주문 건수만 간단히 조회 (422 에러 방지)
+        // 주문 건수 조회 임시 비활성화 (422 에러 해결될 때까지)
         let totalOrders = 0;
-
-        try {
-          console.log(`주문 건수 조회 시작: ${customer.member_id}`);
-          console.log(`정리된 member_id: ${cleanMemberId}`);
-
-          // 날짜 범위 추가 (필수 파라미터)
-          const endDate = new Date().toISOString().split('T')[0];
-          const startDate = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-
-          const ordersRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
-            params: {
-              member_id: cleanMemberId,
-              start_date: startDate,
-              end_date: endDate,
-              limit: 50,
-              shop_no: 1
-            },
-            headers: { Authorization: `Bearer ${access_token}` },
-            timeout: 3000,
-          });
-
-          // 완료된 주문만 계산
-          const orders = ordersRes.data.orders || [];
-          totalOrders = orders.filter((order: { order_status?: string }) =>
-            order.order_status === "N40" || order.order_status === "N50"
-          ).length;
-
-          console.log(`주문 건수 조회 결과: ${totalOrders}건`);
-        } catch (orderError) {
-          console.log(`주문 조회 에러 (건수는 0으로 처리): ${orderError instanceof Error ? orderError.message : String(orderError)}`);
-          totalOrders = 0;
-        }
+        console.log(`회원 정보 저장: ${customer.member_id} (주문 조회는 현재 비활성화)`);
 
         verificationResults.push({
           rowIndex: member.rowIndex,
@@ -273,9 +239,9 @@ export async function POST(req: Request) {
           phone: member.phone,
           isRegistered: true,
           cafe24Data: {
-            userId: cleanMemberId, // @k/@n 제거된 아이디 사용
+            userId: customer.user_id || customer.member_id || "", // 실제 user_id 우선, 없으면 member_id
             userName: customer.user_name || "",
-            memberGrade: customer.group?.group_no || "1", // 숫자 등급 사용
+            memberGrade: customer.group?.group_no || 1, // 숫자 등급 사용 (문자열이 아닌 숫자)
             joinDate: customer.created_date || "",
             totalOrders, // 구매 건수
           },
