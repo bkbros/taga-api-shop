@@ -28,16 +28,56 @@ export async function GET(req: Request) {
     const { access_token } = await loadParams(["access_token"]);
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
 
-    // 1. Get customer basic info (embed 파라미터 제거하여 422 에러 방지)
+    // 1. Get customer basic info (다양한 방법으로 시도)
     console.log(`[DEBUG] Searching customer with user_id: ${userId}`);
-    const customerRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
-      params: {
-        user_id: userId,
-        limit: 1
-        // embed: "group" 제거 - 422 에러 원인일 수 있음
-      },
-      headers: { Authorization: `Bearer ${access_token}` },
-    });
+
+    let customerRes;
+
+    // 방법 1: member_id로 검색 시도 (user_id 대신)
+    try {
+      console.log(`[TRY1] member_id로 검색: ${userId}`);
+      customerRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
+        params: {
+          member_id: userId,
+          limit: 1
+        },
+        headers: { Authorization: `Bearer ${access_token}` },
+      });
+      console.log(`[TRY1] 성공: member_id로 고객 찾음`);
+    } catch (memberIdError) {
+      console.log(`[TRY1] 실패: member_id 검색 에러`);
+
+      // 방법 2: user_id로 검색 시도
+      try {
+        console.log(`[TRY2] user_id로 검색: ${userId}`);
+        customerRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
+          params: {
+            user_id: userId,
+            limit: 1
+          },
+          headers: { Authorization: `Bearer ${access_token}` },
+        });
+        console.log(`[TRY2] 성공: user_id로 고객 찾음`);
+      } catch (userIdError) {
+        console.log(`[TRY2] 실패: user_id 검색 에러`);
+
+        // 방법 3: phone으로 검색 시도 (숫자만 있는 경우)
+        try {
+          console.log(`[TRY3] phone으로 검색: ${userId}`);
+          customerRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
+            params: {
+              phone: userId,
+              limit: 1
+            },
+            headers: { Authorization: `Bearer ${access_token}` },
+          });
+          console.log(`[TRY3] 성공: phone으로 고객 찾음`);
+        } catch (phoneError) {
+          console.log(`[TRY3] 실패: phone 검색 에러`);
+          throw userIdError; // 원래 user_id 에러를 throw
+        }
+      }
+    }
 
     if (!customerRes.data.customers || customerRes.data.customers.length === 0) {
       return NextResponse.json({ error: "Customer not found" }, { status: 404 });
