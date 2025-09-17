@@ -1,6 +1,7 @@
 "use client";
 
 import SyncButton from "components/SyncButton";
+import SheetsVerification from "@/components/SheetsVerification";
 import { useState } from "react";
 
 type SyncStatus = {
@@ -309,7 +310,7 @@ export default function SuccessPage() {
                 {customerInfo.joinDate && (
                   <div>
                     <span className="font-medium text-gray-600">가입일:</span>
-                    <span className="ml-2">{new Date(customerInfo.joinDate).toLocaleDateString('ko-KR')}</span>
+                    <span className="ml-2">{new Date(customerInfo.joinDate).toLocaleDateString("ko-KR")}</span>
                   </div>
                 )}
               </div>
@@ -317,7 +318,7 @@ export default function SuccessPage() {
                 <div>
                   <span className="font-medium text-gray-600">총 구매 금액:</span>
                   <span className="ml-2 font-bold text-green-600">
-                    {customerInfo.totalPurchaseAmount.toLocaleString('ko-KR')}원
+                    {customerInfo.totalPurchaseAmount.toLocaleString("ko-KR")}원
                   </span>
                 </div>
                 <div>
@@ -333,7 +334,7 @@ export default function SuccessPage() {
                 {customerInfo.lastLoginDate && (
                   <div>
                     <span className="font-medium text-gray-600">최근 로그인:</span>
-                    <span className="ml-2">{new Date(customerInfo.lastLoginDate).toLocaleDateString('ko-KR')}</span>
+                    <span className="ml-2">{new Date(customerInfo.lastLoginDate).toLocaleDateString("ko-KR")}</span>
                   </div>
                 )}
               </div>
@@ -408,11 +409,16 @@ export default function SuccessPage() {
         </div>
       )}
 
-      <section className="mt-12 p-6 bg-white rounded-lg shadow-lg border">
+      {/* 회원 정보 검증 섹션 */}
+      <section className="mt-12">
+        <SheetsVerification />
+      </section>
+
+      {/* <section className="mt-12 p-6 bg-white rounded-lg shadow-lg border">
         <h2 className="text-2xl font-semibold mb-4 text-center">📊 데이터 동기화</h2>
         <p className="text-gray-600 text-center mb-6">Google Sheets의 데이터를 Notion으로 자동 동기화합니다.</p>
         <SyncButton />
-      </section>
+      </section> */}
     </main>
   );
 }
