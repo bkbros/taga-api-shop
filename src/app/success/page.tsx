@@ -236,7 +236,7 @@ export default function SuccessPage() {
       setRaw(ordersJson);
 
       // 2. 회원 정보 가져오기 (기본 회원 ID: sda0125)
-      const customerRes = await fetch("/api/customer/info?user_id=sda0125", {
+      const customerRes = await fetch("/api/customer/info?user_id=4418496457@k", {
         method: "GET",
       });
       if (customerRes.ok) {
