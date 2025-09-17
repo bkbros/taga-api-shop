@@ -189,7 +189,7 @@ export async function GET(req: Request) {
               });
 
               if (customerRes.data.customers) {
-                const foundCustomer = customerRes.data.customers.find((customer: any) =>
+                const foundCustomer = customerRes.data.customers.find((customer: { member_id?: string; user_id?: string; member_no?: string | number }) =>
                   customer.member_id === decodedUserId ||
                   customer.user_id === decodedUserId ||
                   customer.member_no === decodedUserId ||
