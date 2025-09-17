@@ -2,6 +2,26 @@ import { NextResponse } from "next/server";
 import axios from "axios";
 import { loadParams } from "@/lib/ssm";
 
+// 3개월 단위 분할 함수 (1년치 등 장기간 조회 시 사용)
+function chunkBy3Months(from: Date, to: Date): Array<{s: Date; e: Date}> {
+  const chunks = [];
+  let s = new Date(from);
+
+  while (s < to) {
+    const e = new Date(s);
+    e.setMonth(e.getMonth() + 3);
+    if (e > to) e.setTime(to.getTime());
+    chunks.push({ s: new Date(s), e: new Date(e) });
+    s = new Date(e);
+    s.setDate(s.getDate() + 1); // 다음 날부터
+  }
+  return chunks;
+}
+
+// 날짜 포맷 함수
+const formatDate = (d: Date, end = false): string =>
+  d.toISOString().slice(0, 10) + (end ? " 23:59:59" : " 00:00:00");
+
 
 type Customer = {
   user_id: string;
@@ -21,9 +41,20 @@ type Customer = {
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const userId = url.searchParams.get("user_id");
+  const periodParam = url.searchParams.get("period") || "3months"; // 기본값: 3개월
 
   if (!userId) {
     return NextResponse.json({ error: "user_id parameter is required" }, { status: 400 });
+  }
+
+  // 기간 검증
+  const validPeriods = ["3months", "1year"];
+  if (!validPeriods.includes(periodParam)) {
+    return NextResponse.json({
+      error: "Invalid period parameter",
+      validValues: validPeriods,
+      hint: "period=3months (기본값) 또는 period=1year"
+    }, { status: 400 });
   }
 
   // 전처리
@@ -135,57 +166,136 @@ export async function GET(req: Request) {
       foundBy: successfulStrategy
     });
 
-    // 2. 주문 정보 조회 (member_id로 조회)
+    // 2. 주문 정보 조회 (기간별 처리, Cafe24 API 3개월 제한 준수)
     let totalOrders = 0;
     let totalPurchaseAmount = 0;
 
     try {
-      console.log(`[ORDERS API] member_id로 주문 조회: ${memberLoginId}`);
+      console.log(`[ORDERS API] member_id로 주문 조회: ${memberLoginId} (기간: ${periodParam})`);
 
-      const endDate = new Date().toISOString().split('T')[0];
-      const startDate = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      if (periodParam === "3months") {
+        // 최근 3개월 (단일 호출)
+        const endDate = new Date();
+        const startDate = new Date();
+        startDate.setMonth(endDate.getMonth() - 3);
 
-      // Orders Count API
-      const countRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders/count`, {
-        params: {
-          shop_no: 1,
-          start_date: startDate,
-          end_date: endDate,
-          member_id: memberLoginId,
-          order_status: "N40,N50"
-        },
-        headers: { Authorization: `Bearer ${access_token}` },
-        timeout: 5000
-      });
+        const startDateStr = formatDate(startDate, false);
+        const endDateStr = formatDate(endDate, true);
 
-      totalOrders = countRes.data.count || 0;
-      console.log(`[ORDERS API] 주문 건수: ${totalOrders}건`);
+        console.log(`[ORDERS API] 검색 기간: ${startDateStr} ~ ${endDateStr}`);
 
-      // 구매 금액 조회 (필요시 페이지네이션)
-      if (totalOrders > 0) {
-        const ordersRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
+        // Orders Count API
+        const countRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders/count`, {
           params: {
             shop_no: 1,
-            start_date: startDate,
-            end_date: endDate,
+            start_date: startDateStr,
+            end_date: endDateStr,
             member_id: memberLoginId,
-            order_status: "N40,N50",
-            limit: 50
+            order_status: "N40,N50"
           },
           headers: { Authorization: `Bearer ${access_token}` },
           timeout: 5000
         });
 
-        if (ordersRes.data.orders) {
-          totalPurchaseAmount = ordersRes.data.orders.reduce((sum: number, order: { order_price_amount?: string }) => {
-            return sum + parseFloat(order.order_price_amount || "0");
-          }, 0);
-          console.log(`[ORDERS API] 구매 금액: ${totalPurchaseAmount}원`);
+        totalOrders = countRes.data.count || 0;
+        console.log(`[ORDERS API] 주문 건수: ${totalOrders}건`);
+
+        // 구매 금액 조회
+        if (totalOrders > 0) {
+          const ordersRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
+            params: {
+              shop_no: 1,
+              start_date: startDateStr,
+              end_date: endDateStr,
+              member_id: memberLoginId,
+              order_status: "N40,N50",
+              limit: 100
+            },
+            headers: { Authorization: `Bearer ${access_token}` },
+            timeout: 5000
+          });
+
+          if (ordersRes.data.orders) {
+            totalPurchaseAmount = ordersRes.data.orders.reduce((sum: number, order: { order_price_amount?: string }) => {
+              return sum + parseFloat(order.order_price_amount || "0");
+            }, 0);
+            console.log(`[ORDERS API] 구매 금액: ${totalPurchaseAmount}원`);
+          }
+        }
+
+      } else if (periodParam === "1year") {
+        // 1년치 (3개월씩 분할 호출)
+        const endAll = new Date();
+        const startAll = new Date();
+        startAll.setFullYear(endAll.getFullYear() - 1);
+
+        console.log(`[ORDERS API] 1년 분할 검색: ${formatDate(startAll, false)} ~ ${formatDate(endAll, true)}`);
+
+        const chunks = chunkBy3Months(startAll, endAll);
+        console.log(`[ORDERS API] 총 ${chunks.length}개 구간으로 분할`);
+
+        for (const {s, e} of chunks) {
+          const chunkStart = formatDate(s, false);
+          const chunkEnd = formatDate(e, true);
+
+          console.log(`[ORDERS API] 구간 처리: ${chunkStart} ~ ${chunkEnd}`);
+
+          // Count
+          const countRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders/count`, {
+            params: {
+              shop_no: 1,
+              start_date: chunkStart,
+              end_date: chunkEnd,
+              member_id: memberLoginId,
+              order_status: "N40,N50"
+            },
+            headers: { Authorization: `Bearer ${access_token}` },
+            timeout: 5000
+          });
+
+          const chunkCount = countRes.data.count || 0;
+          totalOrders += chunkCount;
+          console.log(`[ORDERS API] 구간 주문 건수: ${chunkCount}건 (누적: ${totalOrders}건)`);
+
+          // Amount
+          if (chunkCount > 0) {
+            const ordersRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
+              params: {
+                shop_no: 1,
+                start_date: chunkStart,
+                end_date: chunkEnd,
+                member_id: memberLoginId,
+                order_status: "N40,N50",
+                limit: 1000
+              },
+              headers: { Authorization: `Bearer ${access_token}` },
+              timeout: 5000
+            });
+
+            if (ordersRes.data.orders) {
+              const chunkAmount = ordersRes.data.orders.reduce(
+                (sum: number, order: { order_price_amount?: string }) =>
+                  sum + parseFloat(order.order_price_amount || "0"),
+                0
+              );
+              totalPurchaseAmount += chunkAmount;
+              console.log(`[ORDERS API] 구간 구매 금액: ${chunkAmount}원 (누적: ${totalPurchaseAmount}원)`);
+            }
+          }
         }
       }
 
     } catch (ordersError) {
       console.log(`[ORDERS API] 실패: ${ordersError instanceof Error ? ordersError.message : String(ordersError)}`);
+
+      // 422 에러 상세 로그
+      if (ordersError instanceof Error && 'response' in ordersError) {
+        const axiosError = ordersError as { response?: { status?: number; data?: unknown } };
+        if (axiosError.response?.status === 422) {
+          console.error(`[ORDERS API 422] 상세 원인:`, axiosError.response?.data);
+        }
+      }
+
       totalOrders = 0;
       totalPurchaseAmount = 0;
     }
