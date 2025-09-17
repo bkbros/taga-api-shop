@@ -33,11 +33,16 @@ export async function GET(req: Request) {
   const digits = raw.replace(/\D/g, "");
   const isPhone = /^0\d{9,10}$/.test(digits);
 
-  // 파라미터 구성
-  const params: Record<string, string | number> = { limit: 1 };
+  // 다중 검색 전략 구현
+  const searchStrategies = [];
+
   if (isPhone) {
-    params.cellphone = digits; // 하이픈 제거된 전체번호
-    console.log(`[DEBUG] 휴대폰 번호로 인식: ${digits}`);
+    // 휴대폰 번호 검색 (phone 파라미터 사용)
+    searchStrategies.push({
+      name: 'phone',
+      params: { limit: 1, phone: digits },
+      description: `휴대폰 번호: ${digits}`
+    });
   } else {
     if (/^\d+$/.test(raw)) {
       // 숫자-only인데 휴대폰이 아님 => 지원 불가 식별자
@@ -49,74 +54,76 @@ export async function GET(req: Request) {
         examples: ["@k123456", "user@domain.com", "01012345678"]
       }, { status: 400 });
     }
-    params.member_id = raw;    // 로그인 ID(@k/@n/일반ID/숫자로그인ID 포함)
-    console.log(`[DEBUG] member_id로 인식: ${raw}`);
+
+    // 로그인 ID 검색
+    searchStrategies.push({
+      name: 'member_id',
+      params: { limit: 1, member_id: raw },
+      description: `로그인 ID: ${raw}`
+    });
   }
 
   try {
     const { access_token } = await loadParams(["access_token"]);
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
 
-    // 1. Customers API로 단일 검색 (2025-06-01 스펙 준수)
-    console.log(`[CUSTOMERS API] ${isPhone ? 'cellphone' : 'member_id'}로 검색: ${isPhone ? digits : raw} (${isPhone ? '휴대폰' : '로그인 ID'})`);
-
+    // 1. 다중 검색 전략으로 고객 찾기
     let customerRes;
     let memberLoginId; // member_id는 로그인 ID (문자열)
+    let successfulStrategy;
 
-    try {
-      customerRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
-        params,
-        headers: {
-          Authorization: `Bearer ${access_token}`,
-          'X-Cafe24-Api-Version': '2025-06-01'
-        },
-      });
+    for (const strategy of searchStrategies) {
+      console.log(`[CUSTOMERS API] ${strategy.name}로 검색 시도: ${strategy.description}`);
 
-      if (customerRes.data.customers && customerRes.data.customers.length > 0) {
-        const customer = customerRes.data.customers[0];
-        memberLoginId = customer.member_id || customer.user_id;
+      try {
+        customerRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
+          params: strategy.params,
+          headers: {
+            Authorization: `Bearer ${access_token}`,
+            'X-Cafe24-Api-Version': '2025-06-01'
+          },
+        });
 
-        if (!memberLoginId) {
-          console.log(`[CUSTOMERS API] 경고: member_id/user_id가 비어있음`);
-          return NextResponse.json({
-            error: "Customer found but missing login ID",
-            customerData: customer
-          }, { status: 404 });
+        if (customerRes.data.customers && customerRes.data.customers.length > 0) {
+          const customer = customerRes.data.customers[0];
+          memberLoginId = customer.member_id || customer.user_id;
+
+          if (!memberLoginId) {
+            console.log(`[CUSTOMERS API] 경고: member_id/user_id가 비어있음`);
+            continue; // 다음 전략 시도
+          }
+
+          console.log(`[CUSTOMERS API] 성공: ${strategy.name}로 고객 발견, member_id: ${memberLoginId}`);
+          console.log(`[CUSTOMERS API] 고객 정보:`, JSON.stringify(customer, null, 2));
+          successfulStrategy = strategy.name;
+          break; // 성공하면 루프 종료
+        } else {
+          console.log(`[CUSTOMERS API] ${strategy.name} 검색 결과 없음`);
         }
+      } catch (customerError) {
+        console.log(`[CUSTOMERS API] ${strategy.name} 검색 실패:`, customerError instanceof Error ? customerError.message : String(customerError));
 
-        console.log(`[CUSTOMERS API] 성공: member_id(로그인ID) 획득: ${memberLoginId}`);
-        console.log(`[CUSTOMERS API] 고객 정보:`, JSON.stringify(customer, null, 2));
-      } else {
-        console.log(`[CUSTOMERS API] 고객을 찾을 수 없음 - 404 반환`);
-        return NextResponse.json({
-          error: "Customer not found",
-          tried: params,
-          hint: isPhone
-            ? '휴대폰 번호가 맞는지 확인하세요 (010xxxxxxxx 형식)'
-            : '로그인 ID가 맞는지 확인하세요 (@k123, user@domain, 일반ID 등)'
-        }, { status: 404 });
-      }
-    } catch (customerError) {
-      console.log(`[CUSTOMERS API] 실패:`, customerError instanceof Error ? customerError.message : String(customerError));
-
-      // 422 에러 상세 로그
-      if (customerError instanceof Error && 'response' in customerError) {
-        const axiosError = customerError as { response?: { status?: number; data?: unknown } };
-        if (axiosError.response?.status === 422) {
-          console.error(`[CUSTOMERS API 422] 상세 원인:`, axiosError.response?.data);
+        // 422 에러 상세 로그
+        if (customerError instanceof Error && 'response' in customerError) {
+          const axiosError = customerError as { response?: { status?: number; data?: unknown } };
+          if (axiosError.response?.status === 422) {
+            console.error(`[CUSTOMERS API 422] ${strategy.name} 상세 원인:`, axiosError.response?.data);
+          }
         }
+        // 계속해서 다음 전략 시도
       }
-
-      throw customerError;
     }
 
-    // customer 객체 안전성 검증
+    // 모든 전략이 실패한 경우
     if (!customerRes || !customerRes.data.customers || customerRes.data.customers.length === 0) {
-      console.log(`[ERROR] customerRes가 비어있음 - 예상치 못한 상황`);
+      console.log(`[CUSTOMERS API] 모든 검색 전략 실패 - 404 반환`);
       return NextResponse.json({
-        error: "Customer data is unexpectedly empty",
-        customerRes: customerRes ? "exists" : "undefined"
-      }, { status: 500 });
+        error: "Customer not found",
+        triedStrategies: searchStrategies.map(s => s.name),
+        hint: isPhone
+          ? '휴대폰 번호가 맞는지 확인하세요 (010xxxxxxxx 형식)'
+          : '로그인 ID가 맞는지 확인하세요 (@k123, user@domain, 일반ID 등)'
+      }, { status: 404 });
     }
 
     const customer = customerRes.data.customers[0] as Customer;
@@ -124,7 +131,8 @@ export async function GET(req: Request) {
     console.log(`[DEBUG] Customer data:`, {
       member_id: customer.member_id,
       user_id: customer.user_id,
-      memberLoginId: memberLoginId
+      memberLoginId: memberLoginId,
+      foundBy: successfulStrategy
     });
 
     // 2. 주문 정보 조회 (member_id로 조회)
@@ -220,7 +228,8 @@ export async function GET(req: Request) {
           details: axiosError.response?.data,
           requestedUserId: userId,
           decodedUserId: raw,
-          searchParam: isPhone ? 'cellphone' : 'member_id'
+          triedStrategies: searchStrategies.map(s => s.name),
+          searchType: isPhone ? 'phone' : 'member_id'
         }, { status: 422 });
       }
 
