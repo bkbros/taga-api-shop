@@ -240,7 +240,15 @@ export async function GET(req: Request) {
       }
     }
 
-    // customer 객체는 이미 위에서 획득했으므로 바로 사용
+    // customer 객체 안전성 검증
+    if (!customerRes || !customerRes.data.customers || customerRes.data.customers.length === 0) {
+      console.log(`[ERROR] customerRes가 비어있음 - 예상치 못한 상황`);
+      return NextResponse.json({
+        error: "Customer data is unexpectedly empty",
+        customerRes: customerRes ? "exists" : "undefined"
+      }, { status: 500 });
+    }
+
     const customer = customerRes.data.customers[0] as Customer;
 
     console.log(`[DEBUG] Customer data:`, {
