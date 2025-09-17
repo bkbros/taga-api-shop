@@ -24,20 +24,20 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "user_id parameter is required" }, { status: 400 });
   }
 
+  // URL 디코딩 처리 (최상위 스코프로 이동)
+  const decodedUserId = decodeURIComponent(userId);
+  console.log(`[DEBUG] Decoded user_id: ${decodedUserId}`);
+
+  // 입력값 형태에 따라 검색 방법 결정 (최상위 스코프로 이동)
+  const isNumericId = /^\d+$/.test(decodedUserId);
+  const searchParam = isNumericId ? 'member_id' : 'user_id';
+
   try {
     const { access_token } = await loadParams(["access_token"]);
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
 
     // 1. Customers API로 user_id 검색하여 정확한 member_id 획득
     console.log(`[DEBUG] Searching customer with user_id: ${userId}`);
-
-    // URL 디코딩 처리
-    const decodedUserId = decodeURIComponent(userId);
-    console.log(`[DEBUG] Decoded user_id: ${decodedUserId}`);
-
-    // 입력값 형태에 따라 검색 방법 결정
-    const isNumericId = /^\d+$/.test(decodedUserId);
-    const searchParam = isNumericId ? 'member_id' : 'user_id';
 
     let customerRes;
     let numericMemberId;
