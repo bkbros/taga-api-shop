@@ -49,10 +49,18 @@ export async function GET(req: Request) {
     const customer = customerRes.data.customers[0] as Customer;
 
     // 2. Get customer's order statistics for total purchase amount
+    // API 문서 기준 필수 파라미터 추가
+    const endDate = new Date().toISOString().split('T')[0];
+    const startDate = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
     const ordersRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
       params: {
         member_id: customer.member_id,
-        limit: 1000, // Get all orders to calculate total
+        start_date: startDate,  // 필수 파라미터
+        end_date: endDate,      // 필수 파라미터
+        shop_no: 1,            // 필수 파라미터
+        limit: 1000,
+        offset: 0,
         embed: "items"
       },
       headers: { Authorization: `Bearer ${access_token}` },
