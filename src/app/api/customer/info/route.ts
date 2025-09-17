@@ -7,6 +7,21 @@ type Customer = {
   user_id: string;
   user_name?: string;
   member_id: string;
+  member_no?: string | number;
+  created_date?: string;
+  email?: string;
+  phone?: string;
+  last_login_date?: string;
+  group?: {
+    group_name?: string;
+  };
+};
+
+type CustomerSearchResult = {
+  member_id?: string;
+  user_id?: string;
+  member_no?: string | number;
+  user_name?: string;
   created_date?: string;
   email?: string;
   phone?: string;
@@ -189,7 +204,7 @@ export async function GET(req: Request) {
               });
 
               if (customerRes.data.customers) {
-                const foundCustomer = customerRes.data.customers.find((customer: { member_id?: string; user_id?: string; member_no?: string | number }) =>
+                const foundCustomer = customerRes.data.customers.find((customer: CustomerSearchResult) =>
                   customer.member_id === decodedUserId ||
                   customer.user_id === decodedUserId ||
                   customer.member_no === decodedUserId ||
