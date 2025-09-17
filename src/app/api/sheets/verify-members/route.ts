@@ -229,22 +229,38 @@ export async function POST(req: Request) {
           continue;
         }
 
-        // 주문 건수만 간단히 조회 (타임아웃 방지)
+        // 주문 건수만 간단히 조회 (422 에러 방지)
         let totalOrders = 0;
 
         try {
           console.log(`주문 건수 조회 시작: ${customer.member_id}`);
+
+          // 카카오/네이버 회원의 경우 member_id에서 @k, @n 제거
+          const cleanMemberId = customer.member_id?.replace(/@[kn]$/, '') || customer.member_id;
+          console.log(`정리된 member_id: ${cleanMemberId}`);
+
+          // 날짜 범위 추가 (필수 파라미터)
+          const endDate = new Date().toISOString().split('T')[0];
+          const startDate = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
           const ordersRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
             params: {
-              member_id: customer.member_id,
-              limit: 50, // 최근 50건만 조회로 축소
-              order_status: "N40,N50" // 완료된 주문만
+              member_id: cleanMemberId,
+              start_date: startDate,
+              end_date: endDate,
+              limit: 50,
+              shop_no: 1
             },
             headers: { Authorization: `Bearer ${access_token}` },
-            timeout: 3000, // 3초로 단축
+            timeout: 3000,
           });
 
-          totalOrders = ordersRes.data.orders?.length || 0;
+          // 완료된 주문만 계산
+          const orders = ordersRes.data.orders || [];
+          totalOrders = orders.filter((order: { order_status?: string }) =>
+            order.order_status === "N40" || order.order_status === "N50"
+          ).length;
+
           console.log(`주문 건수 조회 결과: ${totalOrders}건`);
         } catch (orderError) {
           console.log(`주문 조회 에러 (건수는 0으로 처리): ${orderError instanceof Error ? orderError.message : String(orderError)}`);
@@ -257,9 +273,9 @@ export async function POST(req: Request) {
           phone: member.phone,
           isRegistered: true,
           cafe24Data: {
-            userId: customer.user_id || "",
+            userId: cleanMemberId, // @k/@n 제거된 아이디 사용
             userName: customer.user_name || "",
-            memberGrade: customer.group?.group_name || "일반회원",
+            memberGrade: customer.group?.group_no || "1", // 숫자 등급 사용
             joinDate: customer.created_date || "",
             totalOrders, // 구매 건수
           },
