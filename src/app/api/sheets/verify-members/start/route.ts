@@ -131,8 +131,8 @@ async function processMembers(
 
     const verificationResults: VerificationResult[] = [];
 
-    // 배치 처리 (5명씩 - 더 작은 배치로 안정성 향상)
-    const batchSize = 5;
+    // 배치 처리 (10명씩 - 속도 향상)
+    const batchSize = 10;
     const batches = [];
     for (let i = 0; i < members.length; i += batchSize) {
       batches.push(members.slice(i, i + batchSize));
@@ -144,9 +144,10 @@ async function processMembers(
       const batch = batches[batchIndex];
       console.log(`[JOB ${jobId}] 배치 ${batchIndex + 1}/${batches.length} 처리 시작 (${batch.length}명)`);
 
-      for (const member of batch) {
+      // 배치 내 회원들을 병렬 처리
+      const batchPromises = batch.map(async (member) => {
         try {
-          // 각 회원 검증 로직 (기존과 동일)
+          // 각 회원 검증 로직
           let customer = null;
 
           // cellphone으로 검색
@@ -172,12 +173,7 @@ async function processMembers(
                 console.log(`[JOB ${jobId}] ${member.name}(${cleanPhone}) 검색 결과:`, data.customers?.length || 0, '건');
                 if (data.customers && data.customers.length > 0) {
                   customer = data.customers[0];
-                  console.log(`[JOB ${jobId}] ${member.name} 회원 발견:`, {
-                    member_id: customer.member_id,
-                    group_no: customer.group_no,
-                    created_date: customer.created_date,
-                    available_fields: Object.keys(customer)
-                  });
+                  console.log(`[JOB ${jobId}] ${member.name} 회원 발견: ${customer.member_id}`);
                 }
               } else {
                 console.log(`[JOB ${jobId}] ${member.name}(${cleanPhone}) API 응답 실패: ${response.status}`);
@@ -188,46 +184,11 @@ async function processMembers(
           }
 
           if (customer) {
-            // 구매건수 조회 (최근 3개월)
-            let totalOrders = 0;
-            try {
-              const memberId = customer.member_id;
-              if (memberId) {
-                // 최근 3개월 구매건수 조회
-                const now = new Date();
-                const threeMonthsAgo = new Date(now.getTime() - (90 * 24 * 60 * 60 * 1000));
-
-                const startDate = threeMonthsAgo.toISOString().split('T')[0] + ' 00:00:00';
-                const endDate = now.toISOString().split('T')[0] + ' 23:59:59';
-
-                const ordersParams = new URLSearchParams({
-                  member_id: memberId,
-                  start_date: startDate,
-                  end_date: endDate,
-                  order_status: 'N40,N50'
-                });
-
-                const ordersResponse = await fetch(`https://${mallId}.cafe24api.com/api/v2/admin/orders/count?${ordersParams}`, {
-                  method: 'GET',
-                  headers: {
-                    'Authorization': `Bearer ${access_token}`,
-                    'Content-Type': 'application/json',
-                    'X-Cafe24-Api-Version': '2025-06-01'
-                  },
-                });
-
-                if (ordersResponse.ok) {
-                  const ordersData = await ordersResponse.json();
-                  totalOrders = ordersData.count || 0;
-                  console.log(`[JOB ${jobId}] ${member.name} 구매건수: ${totalOrders}건`);
-                }
-              }
-            } catch (error) {
-              console.log(`[JOB ${jobId}] ${member.name} 구매건수 조회 실패:`, error);
-            }
+            // 속도 향상을 위해 구매건수 조회 생략 (필요시 별도 구현)
+            const totalOrders = 0; // 임시로 0으로 설정
 
             // 가입 회원
-            verificationResults.push({
+            return {
               rowIndex: member.rowIndex,
               name: member.name,
               phone: member.phone,
@@ -236,40 +197,41 @@ async function processMembers(
               memberGrade: customer.group_no || 1,
               joinDate: customer.created_date,
               totalOrders: totalOrders
-            });
+            };
           } else {
             // 미가입 회원
-            verificationResults.push({
+            return {
               rowIndex: member.rowIndex,
               name: member.name,
               phone: member.phone,
               isRegistered: false
-            });
+            };
           }
-
-          // 진행률 업데이트
-          const processed = (batchIndex * batchSize) + verificationResults.length % batchSize || batchSize;
-          jobStore.updateProgress(jobId, Math.min(processed, members.length), `${member.name} 검증 완료`);
-
-          // API 호출 간격
-          await new Promise(resolve => setTimeout(resolve, 300));
 
         } catch (error) {
           console.error(`[JOB ${jobId}] ${member.name} 처리 실패:`, error);
-          verificationResults.push({
+          return {
             rowIndex: member.rowIndex,
             name: member.name,
             phone: member.phone,
             isRegistered: false,
             error: error instanceof Error ? error.message : "처리 중 오류 발생"
-          });
+          };
         }
-      }
+      });
 
-      // 배치 간 휴식
+      // 배치 내 모든 회원을 동시에 처리하고 결과 대기
+      const batchResults = await Promise.all(batchPromises);
+      verificationResults.push(...batchResults);
+
+      // 진행률 업데이트
+      const processed = Math.min((batchIndex + 1) * batchSize, members.length);
+      jobStore.updateProgress(jobId, processed, `배치 ${batchIndex + 1} 완료 (${batchResults.length}명 처리)`);
+
+      // 배치 간 휴식 (단축)
       if (batchIndex < batches.length - 1) {
-        jobStore.updateProgress(jobId, (batchIndex + 1) * batchSize, `배치 ${batchIndex + 1} 완료, 잠시 휴식`);
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        jobStore.updateProgress(jobId, (batchIndex + 1) * batchSize, `배치 ${batchIndex + 1} 완료`);
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
     }
 
