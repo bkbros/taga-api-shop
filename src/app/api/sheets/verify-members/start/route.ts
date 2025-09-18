@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { google } from "googleapis";
 import { loadParams } from "@/lib/ssm";
-import { jobStore, generateJobId } from "@/lib/job-store";
 
 // Google Auth 타입 정의
 type GoogleCredentials = {
@@ -86,23 +85,23 @@ export async function POST(req: Request) {
 
     console.log(`파싱된 회원 수: ${members.length}`);
 
-    // Job 생성
-    const jobId = generateJobId();
-    jobStore.createJob(jobId, members.length, "회원 검증 작업 시작");
+    // 동기 처리로 변경 (병렬 처리로 빠르게)
+    console.log(`회원 검증 시작: ${members.length}명`);
 
-    // 백그라운드에서 비동기 처리 시작
-    processMembers(jobId, members, spreadsheetId, sheetName, credentials)
-      .catch(error => {
-        console.error(`[JOB ${jobId}] 백그라운드 작업 실패:`, error);
-        jobStore.failJob(jobId, error.message || "알 수 없는 오류");
-      });
+    const verificationResults = await processMembers(members, spreadsheetId, sheetName, credentials, mallId, access_token);
 
-    // 즉시 응답 (작업 ID 반환)
+    // 결과 반환
+    const summary = {
+      total: verificationResults.length,
+      registered: verificationResults.filter(r => r.isRegistered).length,
+      unregistered: verificationResults.filter(r => !r.isRegistered).length,
+      errors: verificationResults.filter(r => r.error).length
+    };
+
     return NextResponse.json({
       success: true,
-      jobId,
-      message: `${members.length}명의 회원 검증 작업이 시작되었습니다`,
-      totalMembers: members.length
+      message: `${members.length}명 검증 완료`,
+      statistics: summary
     });
 
   } catch (error) {
@@ -114,20 +113,19 @@ export async function POST(req: Request) {
   }
 }
 
-// 백그라운드 처리 함수
+// 회원 처리 함수 (동기)
 async function processMembers(
-  jobId: string,
   members: SheetMember[],
   spreadsheetId: string,
   sheetName: string,
-  credentials: GoogleCredentials
-) {
-  console.log(`[JOB ${jobId}] 백그라운드 처리 시작: ${members.length}명`);
+  credentials: GoogleCredentials,
+  mallId: string,
+  access_token: string
+): Promise<VerificationResult[]> {
+  console.log(`회원 처리 시작: ${members.length}명`);
 
   try {
-    // Cafe24 토큰 로드
-    const { access_token } = await loadParams(["access_token"]);
-    const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
+    // 파라미터로 받은 값들 사용
 
     const verificationResults: VerificationResult[] = [];
 
@@ -138,11 +136,11 @@ async function processMembers(
       batches.push(members.slice(i, i + batchSize));
     }
 
-    jobStore.updateProgress(jobId, 0, `총 ${batches.length}개 배치로 나누어 처리 시작`);
+    console.log(`총 ${batches.length}개 배치로 나누어 처리 시작`);
 
     for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
       const batch = batches[batchIndex];
-      console.log(`[JOB ${jobId}] 배치 ${batchIndex + 1}/${batches.length} 처리 시작 (${batch.length}명)`);
+      console.log(`배치 ${batchIndex + 1}/${batches.length} 처리 시작 (${batch.length}명)`);
 
       // 배치 내 회원들을 병렬 처리
       const batchPromises = batch.map(async (member) => {
@@ -170,16 +168,16 @@ async function processMembers(
 
               if (response.ok) {
                 const data = await response.json();
-                console.log(`[JOB ${jobId}] ${member.name}(${cleanPhone}) 검색 결과:`, data.customers?.length || 0, '건');
+                console.log(`${member.name}(${cleanPhone}) 검색 결과:`, data.customers?.length || 0, '건');
                 if (data.customers && data.customers.length > 0) {
                   customer = data.customers[0];
-                  console.log(`[JOB ${jobId}] ${member.name} 회원 발견: ${customer.member_id}`);
+                  console.log(`${member.name} 회원 발견: ${customer.member_id}`);
                 }
               } else {
-                console.log(`[JOB ${jobId}] ${member.name}(${cleanPhone}) API 응답 실패: ${response.status}`);
+                console.log(`${member.name}(${cleanPhone}) API 응답 실패: ${response.status}`);
               }
             } catch (error) {
-              console.log(`[JOB ${jobId}] cellphone 검색 실패: ${error}`);
+              console.log(`cellphone 검색 실패: ${error}`);
             }
           }
 
@@ -209,7 +207,7 @@ async function processMembers(
           }
 
         } catch (error) {
-          console.error(`[JOB ${jobId}] ${member.name} 처리 실패:`, error);
+          console.error(`${member.name} 처리 실패:`, error);
           return {
             rowIndex: member.rowIndex,
             name: member.name,
@@ -224,19 +222,19 @@ async function processMembers(
       const batchResults = await Promise.all(batchPromises);
       verificationResults.push(...batchResults);
 
-      // 진행률 업데이트
+      // 진행 로그
       const processed = Math.min((batchIndex + 1) * batchSize, members.length);
-      jobStore.updateProgress(jobId, processed, `배치 ${batchIndex + 1} 완료 (${batchResults.length}명 처리)`);
+      console.log(`배치 ${batchIndex + 1} 완료 (${batchResults.length}명 처리) - 총 진행: ${processed}/${members.length}`);
 
       // 배치 간 휴식 (단축)
       if (batchIndex < batches.length - 1) {
-        jobStore.updateProgress(jobId, (batchIndex + 1) * batchSize, `배치 ${batchIndex + 1} 완료`);
+        console.log(`배치 ${batchIndex + 1} 완료, 잠시 휴식`);
         await new Promise(resolve => setTimeout(resolve, 500));
       }
     }
 
     // 스프레드시트에 결과 쓰기
-    jobStore.updateProgress(jobId, members.length, "스프레드시트에 결과 쓰기 중");
+    console.log("스프레드시트에 결과 쓰기 중");
 
     const auth = new google.auth.GoogleAuth({
       credentials,
@@ -275,19 +273,12 @@ async function processMembers(
       requestBody: { values: writeData }
     });
 
-    // 작업 완료
-    const summary = {
-      total: verificationResults.length,
-      registered: verificationResults.filter(r => r.isRegistered).length,
-      unregistered: verificationResults.filter(r => !r.isRegistered).length,
-      errors: verificationResults.filter(r => r.error).length
-    };
-
-    jobStore.completeJob(jobId, summary);
-    console.log(`[JOB ${jobId}] 모든 작업 완료:`, summary);
+    // 작업 완료 - 결과 반환
+    console.log("모든 작업 완료");
+    return verificationResults;
 
   } catch (error) {
-    console.error(`[JOB ${jobId}] 전체 작업 실패:`, error);
-    jobStore.failJob(jobId, error instanceof Error ? error.message : "알 수 없는 오류");
+    console.error("전체 작업 실패:", error);
+    throw error;
   }
 }
