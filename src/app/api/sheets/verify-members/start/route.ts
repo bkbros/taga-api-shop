@@ -1,3 +1,4 @@
+// src/app/api/sheets/verify-members/start/route.ts
 import { NextResponse } from "next/server";
 import { google } from "googleapis";
 
@@ -21,36 +22,35 @@ interface SheetMember {
   rowIndex: number;
 }
 
-interface VerificationResult {
-  rowIndex: number;
-  name: string;
-  phone: string;
-  isRegistered: boolean;
-  memberId?: string;
-  memberGrade?: string; // info 라우트는 문자열 등급을 줍니다.
-  joinDate?: string;
-  totalOrders?: number;
-  totalPurchaseAmount?: number; // 금액도 받아서 AG에 씁니다.
-  error?: string;
-}
-
 type InfoPeriod = "3months" | "1year";
 
 interface InfoApiResponse {
   userId?: string;
   userName?: string;
   memberGrade?: string;
-  joinDate?: string; // ISO or YYYY-MM-DD
+  joinDate?: string;
   totalPurchaseAmount: number;
-  totalOrders: number;
+  totalOrders: number; // ✅ 주문 건수
   email?: string;
   phone?: string;
   lastLoginDate?: string;
-  memberId?: string; // 실제 조회에 사용된 로그인 아이디
+  memberId?: string;
   period: InfoPeriod;
   shopNo: number;
   searchMethod?: "cellphone" | "member_id";
   processingTime?: number;
+}
+
+interface VerificationResult {
+  rowIndex: number;
+  name: string;
+  phone: string;
+  isRegistered: boolean;
+  memberId?: string;
+  memberGrade?: string;
+  joinDate?: string;
+  totalOrders?: number; // ✅ 주문 건수
+  error?: string;
 }
 
 /** =============== Helpers =============== **/
@@ -64,8 +64,7 @@ export async function POST(req: Request) {
       sheetName,
       useEnvCredentials,
       serviceAccountKey,
-    }: // 옵션이 필요하면 period, shopNo 등을 여기에 받을 수 있습니다.
-    {
+    }: {
       spreadsheetId: string;
       sheetName: string;
       useEnvCredentials: boolean;
@@ -108,19 +107,18 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "스프레드시트에 데이터가 없습니다" }, { status: 400 });
     }
 
-    // 헤더 제외하고 파싱
     const members: SheetMember[] = rows
       .slice(1)
       .map((row, index) => ({
         name: (row[0] ?? "").toString().trim(),
         phone: (row[1] ?? "").toString().trim(),
-        rowIndex: index + 2,
+        rowIndex: index + 2, // 1-based + header
       }))
       .filter(m => m.name && m.phone);
 
     console.log(`파싱된 회원 수: ${members.length}`);
 
-    // 우리 info 라우트 호출 준비
+    // info 라우트 호출 준비
     const { origin } = new URL(req.url);
     const period: InfoPeriod = "3months";
     const shopNo = 1;
@@ -141,7 +139,6 @@ export async function POST(req: Request) {
           continue;
         }
 
-        // ✅ info 라우트 호출 (KST/3개월 제한/재시도/추측 로직 모두 재사용)
         const url = `${origin}/api/customer/info?user_id=${encodeURIComponent(
           cleanPhone,
         )}&period=${period}&shop_no=${shopNo}`;
@@ -150,7 +147,6 @@ export async function POST(req: Request) {
         if (res.ok) {
           const data = (await res.json()) as InfoApiResponse;
 
-          // joinDate를 YYYY-MM-DD로 정리
           let joinDate = "";
           if (data.joinDate) {
             try {
@@ -168,11 +164,9 @@ export async function POST(req: Request) {
             memberId: data.memberId ?? data.userId ?? "",
             memberGrade: data.memberGrade ?? "",
             joinDate,
-            totalOrders: data.totalOrders,
-            totalPurchaseAmount: data.totalPurchaseAmount,
+            totalOrders: data.totalOrders, // ✅ 주문 건수만 사용
           });
         } else if (res.status === 404) {
-          // 미가입
           verificationResults.push({
             rowIndex: member.rowIndex,
             name: member.name,
@@ -190,7 +184,7 @@ export async function POST(req: Request) {
           });
         }
 
-        // rate-limit 완화
+        // Cafe24 rate-limit 완화
         await sleep(250);
       } catch (err) {
         verificationResults.push({
@@ -203,17 +197,17 @@ export async function POST(req: Request) {
       }
     }
 
-    // 결과 정렬 후 쓰기
+    // 결과 정렬
     const sorted = verificationResults.sort((a, b) => a.rowIndex - b.rowIndex);
 
-    // 컬럼 매핑:
-    // AC: 회원ID, AD: 가입여부, AE: 회원등급, AF: 가입일, AG: 총구매금액
+    // 시트 쓰기 (AC~AG)
+    // AC: 회원ID, AD: 가입여부, AE: 회원등급, AF: 가입일, AG: 최근3개월 구매건수 ✅
     const writeData = sorted.map(r => [
       r.memberId ?? "",
       r.isRegistered ? "가입" : "미가입",
       r.memberGrade ?? "",
       r.joinDate ?? "",
-      r.totalPurchaseAmount ?? "", // ✅ AG에 '총구매금액' 기록
+      r.totalOrders ?? "", // ✅ AG = 주문건수
     ]);
 
     const writeRange = `${sheetName}!AC2:AG${writeData.length + 1}`;
@@ -225,10 +219,10 @@ export async function POST(req: Request) {
     });
 
     const summary = {
-      total: verificationResults.length,
-      registered: verificationResults.filter(r => r.isRegistered).length,
-      unregistered: verificationResults.filter(r => !r.isRegistered).length,
-      errors: verificationResults.filter(r => !!r.error).length,
+      total: sorted.length,
+      registered: sorted.filter(r => r.isRegistered).length,
+      unregistered: sorted.filter(r => !r.isRegistered).length,
+      errors: sorted.filter(r => !!r.error).length,
     };
 
     return NextResponse.json({
