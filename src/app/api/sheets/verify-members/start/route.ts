@@ -200,7 +200,14 @@ async function processMembers(
                 const startDate = threeMonthsAgo.toISOString().split('T')[0] + ' 00:00:00';
                 const endDate = now.toISOString().split('T')[0] + ' 23:59:59';
 
-                const ordersParams = new URLSearchParams({\n                  member_id: memberId,\n                  start_date: startDate,\n                  end_date: endDate,\n                  order_status: 'N40,N50'\n                });\n\n                const ordersResponse = await fetch(`https://${mallId}.cafe24api.com/api/v2/admin/orders/count?${ordersParams}`, {
+                const ordersParams = new URLSearchParams({
+                  member_id: memberId,
+                  start_date: startDate,
+                  end_date: endDate,
+                  order_status: 'N40,N50'
+                });
+
+                const ordersResponse = await fetch(`https://${mallId}.cafe24api.com/api/v2/admin/orders/count?${ordersParams}`, {
                   method: 'GET',
                   headers: {
                     'Authorization': `Bearer ${access_token}`,
