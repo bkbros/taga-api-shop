@@ -5,6 +5,7 @@
 
 /**
  * 배열의 각 요소에 대해 비동기 함수를 실행하되, 최대 동시성을 제한합니다.
+ * 개별 작업 실패 시에도 전체 처리를 계속합니다.
  * @param items 처리할 아이템 배열
  * @param concurrency 최대 동시 실행 개수
  * @param fn 각 아이템을 처리할 비동기 함수
@@ -15,36 +16,60 @@ export async function mapPool<T, R>(
   concurrency: number,
   fn: (item: T, index: number) => Promise<R>
 ): Promise<R[]> {
+  if (items.length === 0) return [];
+  if (concurrency <= 0) concurrency = 1;
+
   const results: R[] = new Array(items.length);
-  const executing: Promise<void>[] = [];
+  const errors: Array<{ index: number; error: unknown }> = [];
 
-  let index = 0;
+  console.log(`[MAP_POOL] 시작: ${items.length}개 아이템, 동시성: ${concurrency}`);
 
-  const processNext = async (): Promise<void> => {
-    const currentIndex = index++;
-    if (currentIndex >= items.length) return;
+  return new Promise((resolve) => {
+    let index = 0;
+    let running = 0;
+    let completed = 0;
 
-    try {
-      const result = await fn(items[currentIndex], currentIndex);
-      results[currentIndex] = result;
-    } catch (error) {
-      // 에러를 결과에 포함하거나 다시 throw할 수 있습니다
-      throw error;
+    const processNext = async (): Promise<void> => {
+      if (index >= items.length) return;
+
+      const currentIndex = index++;
+      running++;
+
+      console.log(`[MAP_POOL] 처리 시작: ${currentIndex + 1}/${items.length}`);
+
+      try {
+        const result = await fn(items[currentIndex], currentIndex);
+        results[currentIndex] = result;
+        console.log(`[MAP_POOL] 성공: ${currentIndex + 1}/${items.length}`);
+      } catch (error) {
+        console.error(`[MAP_POOL] 에러: ${currentIndex + 1}/${items.length}`, error);
+        errors.push({ index: currentIndex, error });
+        // 에러가 발생해도 계속 진행
+      }
+
+      running--;
+      completed++;
+
+      console.log(`[MAP_POOL] 진행률: ${completed}/${items.length} (실행중: ${running})`);
+
+      if (completed === items.length) {
+        console.log(`[MAP_POOL] 완료: 총 ${items.length}개, 에러 ${errors.length}개`);
+        resolve(results);
+        return;
+      }
+
+      // 다음 작업이 있고 동시성 한도 내라면 새 작업 시작
+      if (index < items.length && running < concurrency) {
+        setImmediate(() => processNext());
+      }
+    };
+
+    // 초기 동시성만큼 작업 시작
+    const initialTasks = Math.min(concurrency, items.length);
+    for (let i = 0; i < initialTasks; i++) {
+      setImmediate(() => processNext());
     }
-
-    // 다음 작업 처리
-    await processNext();
-  };
-
-  // 초기 동시성만큼 작업 시작
-  for (let i = 0; i < Math.min(concurrency, items.length); i++) {
-    executing.push(processNext());
-  }
-
-  // 모든 작업 완료 대기
-  await Promise.all(executing);
-
-  return results;
+  });
 }
 
 /**

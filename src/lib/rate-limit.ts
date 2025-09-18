@@ -45,11 +45,13 @@ export class RateLimiter {
 
         if (this.tokens >= 1) {
           this.tokens -= 1;
+          console.log(`[RATE_LIMITER] 토큰 사용: 남은 토큰 ${this.tokens.toFixed(2)}`);
           resolve();
         } else {
           // 다음 토큰이 생성될 때까지 대기
           const waitTime = (1 - this.tokens) / this.refillRate * 1000;
-          setTimeout(tryAcquire, Math.max(10, waitTime));
+          console.log(`[RATE_LIMITER] 토큰 부족, ${waitTime.toFixed(0)}ms 대기`);
+          setTimeout(tryAcquire, Math.max(50, waitTime));
         }
       };
 

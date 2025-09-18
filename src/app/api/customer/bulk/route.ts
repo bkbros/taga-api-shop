@@ -373,12 +373,20 @@ export async function POST(req: Request) {
     const shopNo = body.shop_no ?? 1;
     const guess = body.guess ?? true;
 
-    // 안전한 기본값으로 설정 (800명 이상 처리를 위해)
-    const concurrency = Math.max(1, Math.min(body.concurrency ?? 2, 8)); // 동시성을 낮춤
-    const rps = Math.max(0.5, Math.min(body.rps ?? 1.5, 5)); // RPS를 낮춤
-    const burst = Math.max(1, Math.min(body.burst ?? 3, 10)); // 버스트를 낮춤
+    // 대량 처리를 위한 매우 안전한 설정
+    const concurrency = Math.max(1, Math.min(body.concurrency ?? 1, 3)); // 동시성을 더 낮춤
+    const rps = Math.max(0.3, Math.min(body.rps ?? 0.8, 2)); // RPS를 더 낮춤
+    const burst = Math.max(1, Math.min(body.burst ?? 2, 5)); // 버스트를 더 낮춤
+
+    // 타임아웃 방지를 위한 청크 처리
+    const maxChunkSize = 50; // 한 번에 최대 50개씩 처리
+    const isLargeRequest = userIds.length > maxChunkSize;
 
     console.log(`[BULK API] 설정 - 동시성: ${concurrency}, RPS: ${rps}, 버스트: ${burst}`);
+
+    if (isLargeRequest) {
+      console.log(`[BULK API] 대량 요청으로 청크 처리 적용: ${maxChunkSize}개씩`);
+    }
 
     const { access_token } = (await loadParams(["access_token"])) as { access_token: string };
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
@@ -392,23 +400,79 @@ export async function POST(req: Request) {
     try {
       console.log(`[BULK API] 처리 시작 - ${userIds.length}개 아이템`);
 
-      const results = await mapPool<string, SingleResult>(userIds, concurrency, async (uid, index) => {
-        try {
-          console.log(`[BULK API] 진행: ${index + 1}/${userIds.length} - ${uid}`);
-          return await fetchOne(uid, { mallId, token: access_token, shopNo, period, guess, limiter });
-        } catch (error) {
-          console.error(`[BULK API] ${uid} 처리 중 에러:`, error);
-          return {
-            input: uid,
-            ok: false,
-            error: {
-              code: "PROCESSING_ERROR",
-              message: error instanceof Error ? error.message : "알 수 없는 에러가 발생했습니다",
-              details: error
+      let allResults: SingleResult[] = [];
+
+      if (isLargeRequest) {
+        // 대량 요청 시 청크 단위로 처리
+        for (let i = 0; i < userIds.length; i += maxChunkSize) {
+          const chunk = userIds.slice(i, i + maxChunkSize);
+          const chunkIndex = Math.floor(i / maxChunkSize) + 1;
+          const totalChunks = Math.ceil(userIds.length / maxChunkSize);
+
+          console.log(`[BULK API] 청크 ${chunkIndex}/${totalChunks} 처리 시작 (${chunk.length}개)`);
+
+          const chunkResults = await mapPool<string, SingleResult>(chunk, concurrency, async (uid, index) => {
+            const globalIndex = i + index;
+            const itemStartTime = Date.now();
+            console.log(`[BULK API] 아이템 ${globalIndex + 1}/${userIds.length} 시작: ${uid}`);
+
+            try {
+              const result = await fetchOne(uid, { mallId, token: access_token, shopNo, period, guess, limiter });
+              const itemTime = Date.now() - itemStartTime;
+              console.log(`[BULK API] 아이템 ${globalIndex + 1}/${userIds.length} 완료: ${uid} (${itemTime}ms)`);
+              return result;
+            } catch (error) {
+              const itemTime = Date.now() - itemStartTime;
+              console.error(`[BULK API] 아이템 ${globalIndex + 1}/${userIds.length} 에러: ${uid} (${itemTime}ms)`, error);
+              return {
+                input: uid,
+                ok: false,
+                error: {
+                  code: "PROCESSING_ERROR",
+                  message: error instanceof Error ? error.message : "알 수 없는 에러가 발생했습니다",
+                  details: error
+                }
+              } as SingleResult;
             }
-          } as SingleResult;
+          });
+
+          allResults = allResults.concat(chunkResults);
+          console.log(`[BULK API] 청크 ${chunkIndex}/${totalChunks} 완료 (누적: ${allResults.length}/${userIds.length})`);
+
+          // 청크 간 휴식
+          if (i + maxChunkSize < userIds.length) {
+            console.log(`[BULK API] 청크 간 휴식 2초`);
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
         }
-      });
+      } else {
+        // 소량 요청 시 일괄 처리
+        allResults = await mapPool<string, SingleResult>(userIds, concurrency, async (uid, index) => {
+          const itemStartTime = Date.now();
+          console.log(`[BULK API] 아이템 ${index + 1}/${userIds.length} 시작: ${uid}`);
+
+          try {
+            const result = await fetchOne(uid, { mallId, token: access_token, shopNo, period, guess, limiter });
+            const itemTime = Date.now() - itemStartTime;
+            console.log(`[BULK API] 아이템 ${index + 1}/${userIds.length} 완료: ${uid} (${itemTime}ms)`);
+            return result;
+          } catch (error) {
+            const itemTime = Date.now() - itemStartTime;
+            console.error(`[BULK API] 아이템 ${index + 1}/${userIds.length} 에러: ${uid} (${itemTime}ms)`, error);
+            return {
+              input: uid,
+              ok: false,
+              error: {
+                code: "PROCESSING_ERROR",
+                message: error instanceof Error ? error.message : "알 수 없는 에러가 발생했습니다",
+                details: error
+              }
+            } as SingleResult;
+          }
+        });
+      }
+
+      const results = allResults;
 
       const ok = results.filter(r => r.ok).length;
       const fail = results.length - ok;
