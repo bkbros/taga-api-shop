@@ -1,248 +1,7 @@
-// // src/app/api/sheets/verify-members/start/route.ts
-// import { NextResponse } from "next/server";
-// import { google } from "googleapis";
-
-// /** =============== Types =============== **/
-// type GoogleCredentials = {
-//   type: string;
-//   project_id: string;
-//   private_key_id: string;
-//   private_key: string;
-//   client_email: string;
-//   client_id: string;
-//   auth_uri: string;
-//   token_uri: string;
-//   auth_provider_x509_cert_url: string;
-//   client_x509_cert_url: string;
-// };
-
-// interface SheetMember {
-//   name: string;
-//   phone: string;
-//   rowIndex: number;
-// }
-
-// type InfoPeriod = "3months" | "1year";
-
-// interface InfoApiResponse {
-//   userId?: string;
-//   userName?: string;
-//   memberGrade?: string;
-//   joinDate?: string;
-//   totalPurchaseAmount: number;
-//   totalOrders: number; // ✅ 주문 건수
-//   email?: string;
-//   phone?: string;
-//   lastLoginDate?: string;
-//   memberId?: string;
-//   period: InfoPeriod;
-//   shopNo: number;
-//   searchMethod?: "cellphone" | "member_id";
-//   processingTime?: number;
-// }
-
-// interface VerificationResult {
-//   rowIndex: number;
-//   name: string;
-//   phone: string;
-//   isRegistered: boolean;
-//   memberId?: string;
-//   memberGrade?: string;
-//   joinDate?: string;
-//   totalOrders?: number; // ✅ 주문 건수
-//   error?: string;
-// }
-
-// /** =============== Helpers =============== **/
-// const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
-
-// /** =============== Handler =============== **/
-// export async function POST(req: Request) {
-//   try {
-//     const {
-//       spreadsheetId,
-//       sheetName,
-//       useEnvCredentials,
-//       serviceAccountKey,
-//     }: {
-//       spreadsheetId: string;
-//       sheetName: string;
-//       useEnvCredentials: boolean;
-//       serviceAccountKey?: string;
-//     } = await req.json();
-
-//     if (!spreadsheetId) {
-//       return NextResponse.json({ error: "spreadsheetId가 필요합니다" }, { status: 400 });
-//     }
-
-//     // Google 인증
-//     let credentials: GoogleCredentials;
-//     if (useEnvCredentials) {
-//       const googleCredJson = process.env.GOOGLE_CRED_JSON;
-//       if (!googleCredJson) {
-//         return NextResponse.json({ error: "환경변수 GOOGLE_CRED_JSON이 없습니다" }, { status: 500 });
-//       }
-//       credentials = JSON.parse(Buffer.from(googleCredJson, "base64").toString("utf-8")) as GoogleCredentials;
-//     } else {
-//       if (!serviceAccountKey) {
-//         return NextResponse.json({ error: "serviceAccountKey가 필요합니다" }, { status: 400 });
-//       }
-//       credentials = JSON.parse(serviceAccountKey) as GoogleCredentials;
-//     }
-
-//     const auth = new google.auth.GoogleAuth({
-//       credentials,
-//       scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-//     });
-//     const sheets = google.sheets({ version: "v4", auth });
-
-//     // 시트에서 I:J 읽기 (I=이름, J=연락처)
-//     const sourceResponse = await sheets.spreadsheets.values.get({
-//       spreadsheetId,
-//       range: `${sheetName}!I:J`,
-//     });
-
-//     const rows = sourceResponse.data.values;
-//     if (!rows || rows.length <= 1) {
-//       return NextResponse.json({ error: "스프레드시트에 데이터가 없습니다" }, { status: 400 });
-//     }
-
-//     const members: SheetMember[] = rows
-//       .slice(1)
-//       .map((row, index) => ({
-//         name: (row[0] ?? "").toString().trim(),
-//         phone: (row[1] ?? "").toString().trim(),
-//         rowIndex: index + 2, // 1-based + header
-//       }))
-//       .filter(m => m.name && m.phone);
-
-//     console.log(`파싱된 회원 수: ${members.length}`);
-
-//     // info 라우트 호출 준비
-//     const { origin } = new URL(req.url);
-//     const period: InfoPeriod = "3months";
-//     const shopNo = 1;
-
-//     const verificationResults: VerificationResult[] = [];
-
-//     for (const member of members) {
-//       try {
-//         const cleanPhone = member.phone.replace(/\D/g, "");
-//         if (!cleanPhone) {
-//           verificationResults.push({
-//             rowIndex: member.rowIndex,
-//             name: member.name,
-//             phone: member.phone,
-//             isRegistered: false,
-//             error: "연락처 없음",
-//           });
-//           continue;
-//         }
-
-//         const url = `${origin}/api/customer/info?user_id=${encodeURIComponent(
-//           cleanPhone,
-//         )}&period=${period}&shop_no=${shopNo}`;
-//         const res = await fetch(url, { method: "GET" });
-
-//         if (res.ok) {
-//           const data = (await res.json()) as InfoApiResponse;
-
-//           let joinDate = "";
-//           if (data.joinDate) {
-//             try {
-//               joinDate = data.joinDate.split("T")[0];
-//             } catch {
-//               joinDate = data.joinDate;
-//             }
-//           }
-
-//           verificationResults.push({
-//             rowIndex: member.rowIndex,
-//             name: member.name,
-//             phone: member.phone,
-//             isRegistered: true,
-//             memberId: data.memberId ?? data.userId ?? "",
-//             memberGrade: data.memberGrade ?? "",
-//             joinDate,
-//             totalOrders: data.totalOrders, // ✅ 주문 건수만 사용
-//           });
-//         } else if (res.status === 404) {
-//           verificationResults.push({
-//             rowIndex: member.rowIndex,
-//             name: member.name,
-//             phone: member.phone,
-//             isRegistered: false,
-//           });
-//         } else {
-//           const text = await res.text();
-//           verificationResults.push({
-//             rowIndex: member.rowIndex,
-//             name: member.name,
-//             phone: member.phone,
-//             isRegistered: false,
-//             error: `info API 실패(${res.status}): ${text}`,
-//           });
-//         }
-
-//         // Cafe24 rate-limit 완화
-//         await sleep(250);
-//       } catch (err) {
-//         verificationResults.push({
-//           rowIndex: member.rowIndex,
-//           name: member.name,
-//           phone: member.phone,
-//           isRegistered: false,
-//           error: err instanceof Error ? err.message : "처리 중 오류 발생",
-//         });
-//       }
-//     }
-
-//     // 결과 정렬
-//     const sorted = verificationResults.sort((a, b) => a.rowIndex - b.rowIndex);
-
-//     // 시트 쓰기 (AC~AG)
-//     // AC: 회원ID, AD: 가입여부, AE: 회원등급, AF: 가입일, AG: 최근3개월 구매건수 ✅
-//     const writeData = sorted.map(r => [
-//       r.memberId ?? "",
-//       r.isRegistered ? "가입" : "미가입",
-//       r.memberGrade ?? "",
-//       r.joinDate ?? "",
-//       r.totalOrders ?? "", // ✅ AG = 주문건수
-//     ]);
-
-//     const writeRange = `${sheetName}!AC2:AG${writeData.length + 1}`;
-//     await sheets.spreadsheets.values.update({
-//       spreadsheetId,
-//       range: writeRange,
-//       valueInputOption: "RAW",
-//       requestBody: { values: writeData },
-//     });
-
-//     const summary = {
-//       total: sorted.length,
-//       registered: sorted.filter(r => r.isRegistered).length,
-//       unregistered: sorted.filter(r => !r.isRegistered).length,
-//       errors: sorted.filter(r => !!r.error).length,
-//     };
-
-//     return NextResponse.json({
-//       success: true,
-//       message: `${sorted.length}명 검증 완료`,
-//       statistics: summary,
-//     });
-//   } catch (error) {
-//     console.error("작업 실패:", error);
-//     return NextResponse.json(
-//       { error: "작업에 실패했습니다", details: error instanceof Error ? error.message : String(error) },
-//       { status: 500 },
-//     );
-//   }
-// }
-// src/app/api/sheets/verify-members/start/route.ts
 import { NextResponse } from "next/server";
 import { google } from "googleapis";
 
-/** ===================== Types ===================== **/
+/** ========= Types ========= **/
 
 type GoogleCredentials = {
   type: string;
@@ -260,91 +19,59 @@ type GoogleCredentials = {
 interface SheetMember {
   name: string;
   phone: string;
-  rowIndex: number; // 1-based (헤더는 1행)
+  rowIndex: number; // 1-based row number in sheet
 }
 
-type InfoSearchMethod = "cellphone" | "member_id";
-type InfoPeriod = "3months" | "1year";
-
-interface InfoApiResponse {
+// /api/customer/info 성공 응답 형태 (우리가 만든 라우트 기준)
+interface InfoSuccess {
   userId?: string;
   userName?: string;
-  memberGrade?: string;
-  memberGradeNo?: number; // ✅ 숫자 등급(있으면 사용)
-  joinDate?: string; // ISO 또는 'YYYY-MM-DD ...'
-  totalOrders: number; // ✅ 최근 3개월(또는 period) 구매건수
-  email?: string;
-  phone?: string;
-  lastLoginDate?: string;
-  memberId?: string;
-  period?: InfoPeriod;
+  memberId: string;
+  memberGrade?: string; // 등급명 (예: "VIP 3")
+  memberGradeNo?: number; // 등급번호 (숫자) - 있으면 이 값을 우선 사용
+  joinDate?: string; // ISO or YYYY-MM-DD
+  totalOrders: number; // 최근 3개월 주문 건수
+  period?: "3months" | "1year";
   shopNo?: number;
-  searchMethod?: InfoSearchMethod;
+  searchMethod?: "cellphone" | "member_id";
   processingTime?: number;
 }
 
-interface VerificationResult {
-  rowIndex: number;
-  name: string;
-  phone: string;
-  isRegistered: boolean;
-  memberId?: string;
-  memberGradeNo?: number;
-  joinDate?: string;
-  totalOrders?: number;
-  error?: string;
+interface InfoError {
+  error: string;
+  details?: unknown;
 }
 
-/** ===================== Small helpers ===================== **/
+/** ========= Utils ========= **/
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
-/** 제한 동시성 병렬 처리 */
-async function concurrentMap<T, R>(
-  items: T[],
-  limit: number,
-  worker: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = new Array(items.length);
-  let cursor = 0;
+const digitsFromText = (s?: string): number | undefined => {
+  if (!s) return undefined;
+  const m = s.match(/\d+/);
+  return m ? Number(m[0]) : undefined;
+};
 
-  async function runner() {
-    while (true) {
-      const i = cursor++;
-      if (i >= items.length) break;
-      results[i] = await worker(items[i], i);
-    }
-  }
+const isInfoError = (v: unknown): v is InfoError => typeof v === "object" && v !== null && "error" in v;
 
-  const workers = Array.from({ length: Math.max(1, limit) }, runner);
-  await Promise.all(workers);
-  return results;
-}
-
-/** ===================== Route Handler ===================== **/
+/** ========= Handler ========= **/
 
 export async function POST(req: Request) {
   try {
-    const { spreadsheetId, sheetName, useEnvCredentials, serviceAccountKey } = (await req.json()) as {
-      spreadsheetId?: string;
-      sheetName?: string;
-      useEnvCredentials?: boolean;
-      serviceAccountKey?: string;
-    };
+    const { spreadsheetId, sheetName, useEnvCredentials, serviceAccountKey, shopNo } = await req.json();
 
     if (!spreadsheetId) {
       return NextResponse.json({ error: "spreadsheetId가 필요합니다" }, { status: 400 });
     }
-    if (!sheetName) {
-      return NextResponse.json({ error: "sheetName이 필요합니다" }, { status: 400 });
-    }
+    const targetSheet = (sheetName || "").trim() || "Sheet1";
+    const shopNoNum = Number.isInteger(Number(shopNo)) ? Number(shopNo) : 1;
 
-    /** 1) Google Sheets 인증 */
+    // Google Sheets 인증
     let credentials: GoogleCredentials;
-    if (useEnvCredentials ?? true) {
+    if (useEnvCredentials) {
       const googleCredJson = process.env.GOOGLE_CRED_JSON;
       if (!googleCredJson) {
-        return NextResponse.json({ error: "환경변수 GOOGLE_CRED_JSON 이 누락되었습니다" }, { status: 500 });
+        return NextResponse.json({ error: "환경변수 GOOGLE_CRED_JSON 이 설정되지 않았습니다" }, { status: 500 });
       }
       credentials = JSON.parse(Buffer.from(googleCredJson, "base64").toString("utf-8")) as GoogleCredentials;
     } else {
@@ -360,162 +87,155 @@ export async function POST(req: Request) {
     });
     const sheets = google.sheets({ version: "v4", auth });
 
-    /** 2) 스프레드시트에서 I:J 읽기 (이름, 연락처) */
-    const sourceResp = await sheets.spreadsheets.values.get({
+    // 1) 시트에서 입력 데이터 읽기 (I:이름, J:연락처)
+    const sourceResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${sheetName}!I:J`,
+      range: `${targetSheet}!I:J`,
     });
-    const rows = sourceResp.data.values;
+
+    const rows = sourceResponse.data.values;
     if (!rows || rows.length <= 1) {
-      return NextResponse.json(
-        { error: "스프레드시트에 데이터가 없습니다 (헤더 제외 1행 이상 필요)" },
-        { status: 400 },
-      );
+      return NextResponse.json({ error: "스프레드시트에 데이터가 없습니다" }, { status: 400 });
     }
 
     const members: SheetMember[] = rows
       .slice(1)
-      .map((row, idx) => {
-        const name = (row[0] ?? "").toString().trim();
-        const phone = (row[1] ?? "").toString().trim();
-        return { name, phone, rowIndex: idx + 2 }; // 2행부터 데이터
-      })
+      .map((row, idx) => ({
+        name: (row?.[0] ?? "").toString().trim(),
+        phone: (row?.[1] ?? "").toString().trim(),
+        rowIndex: idx + 2,
+      }))
       .filter(m => m.name && m.phone);
 
-    const total = members.length;
-    if (total === 0) {
-      return NextResponse.json({ error: "이름과 연락처가 모두 채워진 행이 없습니다" }, { status: 400 });
-    }
+    console.log(`[SHEETS] 파싱된 회원 수: ${members.length}`);
 
-    console.log(`[VERIFY] 대상 행 수: ${total}`);
+    // 2) 내 서버의 /api/customer/info 호출 준비 (origin 계산)
+    const url = new URL(req.url);
+    const origin = `${url.protocol}//${url.host}`;
 
-    /** 3) 각 회원 → 내부 /api/customer/info 호출 (period=3months, shop_no=1) */
-    const base = new URL(req.url);
-    const infoBase = new URL("/api/customer/info", base.origin);
+    // 3) 각 회원 처리 (순차 + 소폭 대기)
+    const results: {
+      rowIndex: number;
+      memberId: string;
+      isRegisteredEmoji: "⭕" | "❌";
+      memberGradeNoStr: string; // AE 셀에 쓸 문자열
+      joinDateStr: string;
+      orders3mStr: string;
+      hadError: boolean;
+    }[] = [];
 
-    // 동시성 3, 각 작업 사이 소폭 대기 (내부 라우트 및 상류 Rate Limit 배려)
-    const results = await concurrentMap<SheetMember, VerificationResult>(members, 3, async member => {
+    for (const member of members) {
       const cleanPhone = member.phone.replace(/\D/g, "");
-      if (!cleanPhone) {
-        return {
-          rowIndex: member.rowIndex,
-          name: member.name,
-          phone: member.phone,
-          isRegistered: false,
-          error: "연락처 포맷 오류",
-        };
-      }
+      let memberId = "";
+      let isRegisteredEmoji: "⭕" | "❌" = "❌";
+      let memberGradeNoStr = "";
+      let joinDateStr = "";
+      let orders3mStr = "";
+      let hadError = false;
 
-      const u = new URL(infoBase.toString());
-      u.searchParams.set("user_id", cleanPhone);
-      u.searchParams.set("period", "3months");
-      u.searchParams.set("shop_no", "1");
+      if (!/^0\d{9,10}$/.test(cleanPhone)) {
+        // 전화번호 형식이 아니면 조회 불가로 판단
+        results.push({
+          rowIndex: member.rowIndex,
+          memberId,
+          isRegisteredEmoji,
+          memberGradeNoStr,
+          joinDateStr,
+          orders3mStr,
+          hadError: true,
+        });
+        continue;
+      }
 
       try {
-        const res = await fetch(u.toString(), { method: "GET" });
-        if (res.ok) {
-          const data = (await res.json()) as InfoApiResponse;
+        const infoUrl =
+          `${origin}/api/customer/info?` +
+          new URLSearchParams({
+            user_id: cleanPhone, // info 라우트가 휴대폰도 지원
+            period: "3months",
+            shop_no: String(shopNoNum),
+            guess: "1", // 숫자-only일 때 @k/@n 후보도 시도(안전)
+          }).toString();
 
-          // 날짜를 YYYY-MM-DD 로 슬림화
-          let ymd = "";
-          if (data.joinDate) {
-            try {
-              ymd = data.joinDate.split("T")[0];
-            } catch {
-              ymd = data.joinDate;
-            }
+        const resp = await fetch(infoUrl, { method: "GET" });
+
+        if (!resp.ok) {
+          if (resp.status === 404) {
+            // 미가입
+            isRegisteredEmoji = "❌";
+          } else {
+            // 그 외 오류
+            hadError = true;
+            console.log(`[INFO API] ${member.name}/${cleanPhone} 실패 status=${resp.status}`);
           }
+        } else {
+          const payload: InfoSuccess | InfoError = await resp.json();
+          if (isInfoError(payload)) {
+            // 에러 페이로드지만 200일 경우(거의 없음) 방어
+            hadError = true;
+            console.log(`[INFO API] ${member.name}/${cleanPhone} payload error=`, payload.error);
+          } else {
+            // 성공
+            const gradeNo =
+              typeof payload.memberGradeNo === "number" ? payload.memberGradeNo : digitsFromText(payload.memberGrade); // 이름에서 숫자 추출 백업
 
-          // 숫자 등급 파생 (memberGradeNo 우선, 없으면 memberGrade에서 정수 추출 시도)
-          let gradeNo: number | undefined = data.memberGradeNo;
-          if (gradeNo === undefined && data.memberGrade) {
-            const m = data.memberGrade.match(/\d+/);
-            if (m) gradeNo = Number(m[0]);
+            memberId = payload.memberId ?? "";
+            isRegisteredEmoji = "⭕";
+            memberGradeNoStr = typeof gradeNo === "number" ? String(gradeNo) : "";
+            joinDateStr = payload.joinDate ? payload.joinDate.split("T")[0] ?? payload.joinDate : "";
+            orders3mStr = String(payload.totalOrders ?? 0);
           }
-
-          return {
-            rowIndex: member.rowIndex,
-            name: member.name,
-            phone: member.phone,
-            isRegistered: true,
-            memberId: data.memberId ?? data.userId ?? "",
-            memberGradeNo: Number.isFinite(gradeNo) ? (gradeNo as number) : undefined,
-            joinDate: ymd,
-            totalOrders: data.totalOrders ?? 0,
-          };
         }
-
-        if (res.status === 404) {
-          return {
-            rowIndex: member.rowIndex,
-            name: member.name,
-            phone: member.phone,
-            isRegistered: false,
-          };
-        }
-
-        const errText = await res.text();
-        return {
-          rowIndex: member.rowIndex,
-          name: member.name,
-          phone: member.phone,
-          isRegistered: false,
-          error: `info 응답 실패(${res.status}): ${errText}`,
-        };
-      } catch (e: unknown) {
-        return {
-          rowIndex: member.rowIndex,
-          name: member.name,
-          phone: member.phone,
-          isRegistered: false,
-          error: e instanceof Error ? e.message : "알 수 없는 오류",
-        };
-      } finally {
-        // 너무 과도한 연속 호출을 피하기 위해 살짝 쉼
-        await sleep(150);
+      } catch (e) {
+        hadError = true;
+        console.log(`[INFO API] ${member.name}/${cleanPhone} 호출 예외:`, e);
       }
-    });
 
-    /** 4) 결과 시트 쓰기 (행별 정확 위치에 batchUpdate) */
+      results.push({
+        rowIndex: member.rowIndex,
+        memberId,
+        isRegisteredEmoji,
+        memberGradeNoStr,
+        joinDateStr,
+        orders3mStr,
+        hadError,
+      });
+
+      // Cafe24 레이트 리밋 보호 (info 라우트 내부에서도 보호하지만 여기도 살짝 대기)
+      await sleep(250);
+    }
+
+    // 4) 시트에 쓰기 (AC:ID, AD:가입여부 ⭕/❌, AE:등급번호, AF:가입일, AG:최근3개월구매건수)
     const sorted = results.sort((a, b) => a.rowIndex - b.rowIndex);
+    const values = sorted.map(r => [r.memberId, r.isRegisteredEmoji, r.memberGradeNoStr, r.joinDateStr, r.orders3mStr]);
 
-    // AC: 회원ID, AD: 가입여부(⭕/❌), AE: 회원등급(숫자), AF: 가입일, AG: 최근3개월 구매건수
-    const data = sorted.map(r => ({
-      range: `${sheetName}!AC${r.rowIndex}:AG${r.rowIndex}`,
-      values: [
-        [
-          r.memberId ?? "",
-          r.isRegistered ? "⭕" : "❌",
-          typeof r.memberGradeNo === "number" ? r.memberGradeNo : "",
-          r.joinDate ?? "",
-          r.totalOrders ?? "",
-        ],
-      ],
-    }));
+    const endRow = values.length + 1; // 헤더 1행 감안
+    const writeRange = `${targetSheet}!AC2:AG${endRow}`;
 
-    await sheets.spreadsheets.values.batchUpdate({
+    await sheets.spreadsheets.values.update({
       spreadsheetId,
-      requestBody: {
-        valueInputOption: "RAW",
-        data,
-      },
+      range: writeRange,
+      valueInputOption: "RAW",
+      requestBody: { values },
     });
 
-    /** 5) 요약 반환 */
+    // 5) 요약 통계
     const summary = {
-      total: sorted.length,
-      registered: sorted.filter(r => r.isRegistered).length,
-      unregistered: sorted.filter(r => !r.isRegistered && !r.error).length,
-      errors: sorted.filter(r => Boolean(r.error)).length,
+      total: results.length,
+      registered: results.filter(r => r.isRegisteredEmoji === "⭕").length,
+      unregistered: results.filter(r => r.isRegisteredEmoji === "❌" && !r.hadError).length,
+      errors: results.filter(r => r.hadError).length,
     };
+
+    console.log("[SHEETS] 완료:", summary);
 
     return NextResponse.json({
       success: true,
-      message: `${sorted.length}명 검증 완료 (최근 3개월 구매건수 기준)`,
+      message: `${results.length}명 검증 완료`,
       statistics: summary,
     });
-  } catch (error: unknown) {
-    console.error("[verify-members/start] 실패:", error);
+  } catch (error) {
+    console.error("[SHEETS] 작업 실패:", error);
     return NextResponse.json(
       { error: "작업에 실패했습니다", details: error instanceof Error ? error.message : String(error) },
       { status: 500 },
