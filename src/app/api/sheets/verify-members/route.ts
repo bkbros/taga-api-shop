@@ -130,9 +130,9 @@ export async function POST(req: Request) {
     console.log(`파싱된 회원 수: ${members.length}`);
     console.log("첫 3개 회원:", members.slice(0, 3));
 
-    // 처리할 회원 수 제한 (단계적 증가: 10명)
-    const limitedMembers = members.slice(0, 10);
-    console.log(`실제 처리할 회원 수: ${limitedMembers.length}명 (제한 적용)`);
+    // 모든 회원 처리 (제한 제거)
+    const limitedMembers = members; // 제한 없이 모든 회원 처리
+    console.log(`실제 처리할 회원 수: ${limitedMembers.length}명 (제한 없음)`);
 
     // 2. Cafe24 API로 각 회원 정보 검증
     console.log("Cafe24 API 토큰 로드 시작");
@@ -142,7 +142,20 @@ export async function POST(req: Request) {
 
     const verificationResults: VerificationResult[] = [];
 
-    for (const member of limitedMembers) {
+    // 배치 처리를 위한 설정 (대량 처리 시 안정성 향상)
+    const batchSize = 20; // 한 번에 20명씩 처리
+    const batches = [];
+    for (let i = 0; i < limitedMembers.length; i += batchSize) {
+      batches.push(limitedMembers.slice(i, i + batchSize));
+    }
+
+    console.log(`배치 처리 시작: 총 ${batches.length}개 배치, 배치당 최대 ${batchSize}명`);
+
+    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+      const batch = batches[batchIndex];
+      console.log(`배치 ${batchIndex + 1}/${batches.length} 처리 시작 (${batch.length}명)`);
+
+      for (const member of batch) {
       console.log(`회원 검증 시작: ${member.name} (${member.phone})`);
       try {
         // Cafe24에서 회원 정보 조회 - 다양한 방법으로 검색
@@ -337,8 +350,17 @@ export async function POST(req: Request) {
 
       console.log(`회원 검증 완료: ${member.name}`);
 
-      // API 호출 제한을 위한 딜레이 (200ms로 단축)
-      await new Promise(resolve => setTimeout(resolve, 200));
+        // API 호출 제한을 위한 딜레이 (200ms로 단축)
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+
+      console.log(`배치 ${batchIndex + 1}/${batches.length} 완료 (${batch.length}명 처리)`);
+
+      // 배치 간 휴식 (마지막 배치가 아닌 경우에만)
+      if (batchIndex < batches.length - 1) {
+        console.log(`배치 간 휴식 3초`);
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      }
     }
 
     console.log(`모든 회원 검증 완료. 총 ${verificationResults.length}건`);
