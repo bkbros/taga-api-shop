@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
+import { startVerificationJob, pollJobUntilComplete, formatTime, type JobStatus } from "@/lib/async-job-client";
 
 type VerificationStats = {
   total: number;
@@ -17,6 +18,11 @@ export default function SheetsVerification() {
     statistics: VerificationStats;
     message: string;
   } | null>(null);
+
+  // 진행률 상태 추가
+  const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
+  const [isPolling, setIsPolling] = useState(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // 폼 상태
   const [spreadsheetId, setSpreadsheetId] = useState("1i4zNovtQXwTz0wBUN6chhlqHe3yM_gVRwtC0H73stIg");
@@ -35,54 +41,73 @@ export default function SheetsVerification() {
       return;
     }
 
+    // 기존 작업 취소
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    abortControllerRef.current = new AbortController();
+
     setLoading(true);
+    setIsPolling(true);
     setError(null);
     setResult(null);
+    setJobStatus(null);
 
     try {
-      console.log("API 요청 시작:", {
+      console.log("비동기 회원 검증 작업 시작:", {
         spreadsheetId,
         sheetName,
         useEnvCredentials,
         hasServiceAccountKey: !!serviceAccountKey
       });
 
-      const response = await fetch("/api/sheets/verify-members", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          spreadsheetId,
-          sheetName,
-          serviceAccountKey: useEnvCredentials ? undefined : serviceAccountKey,
-          useEnvCredentials,
-        }),
+      // 1. 비동기 작업 시작
+      const startResponse = await startVerificationJob({
+        spreadsheetId,
+        sheetName,
+        serviceAccountKey: useEnvCredentials ? undefined : serviceAccountKey,
+        useEnvCredentials,
       });
 
-      console.log("API 응답 상태:", response.status);
+      console.log("작업 시작됨:", startResponse);
+      setLoading(false); // 작업이 시작되었으므로 로딩 해제
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error("API 에러 응답:", errorText);
-        let errorData;
-        try {
-          errorData = JSON.parse(errorText);
-        } catch {
-          throw new Error(`API 요청 실패 (${response.status}): ${errorText}`);
+      // 2. 진행률 폴링 시작
+      const finalStatus = await pollJobUntilComplete(
+        startResponse.jobId,
+        (status: JobStatus) => {
+          setJobStatus(status);
+          console.log(`진행률: ${status.progress}% (${status.current}/${status.total}) - ${status.message}`);
         }
-        throw new Error(errorData.error || "검증 요청 실패");
+      );
+
+      // 3. 완료 시 결과 설정
+      if (finalStatus.result) {
+        const statistics = finalStatus.result as VerificationStats;
+        setResult({
+          success: true,
+          statistics,
+          message: `검증 완료: 총 ${statistics.total}명 처리 (가입 ${statistics.registered}명, 미가입 ${statistics.unregistered}명)`
+        });
       }
 
-      const data = await response.json();
-      console.log("API 성공 응답:", data);
-      setResult(data);
+      console.log("회원 검증 완료:", finalStatus.result);
     } catch (err) {
       console.error("검증 에러:", err);
       setError(err instanceof Error ? err.message : "알 수 없는 오류 발생");
     } finally {
       setLoading(false);
+      setIsPolling(false);
     }
+  };
+
+  const handleCancel = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    setLoading(false);
+    setIsPolling(false);
+    setJobStatus(null);
   };
 
   return (
@@ -184,17 +209,67 @@ export default function SheetsVerification() {
         </div>
       </div>
 
-      <button
-        onClick={handleVerification}
-        disabled={loading}
-        className={`w-full py-3 px-4 rounded-md text-white font-semibold ${
-          loading
-            ? "bg-gray-400 cursor-not-allowed"
-            : "bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
-        }`}
-      >
-        {loading ? "검증 중..." : "회원 정보 검증 시작"}
-      </button>
+      <div className="space-y-3">
+        <button
+          onClick={handleVerification}
+          disabled={loading || isPolling}
+          className={`w-full py-3 px-4 rounded-md text-white font-semibold ${
+            loading || isPolling
+              ? "bg-gray-400 cursor-not-allowed"
+              : "bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          }`}
+        >
+          {loading ? "작업 시작 중..." : isPolling ? "검증 진행 중..." : "회원 정보 검증 시작"}
+        </button>
+
+        {isPolling && (
+          <button
+            onClick={handleCancel}
+            className="w-full py-2 px-4 rounded-md text-red-600 border border-red-300 hover:bg-red-50"
+          >
+            작업 취소
+          </button>
+        )}
+      </div>
+
+      {/* 진행률 표시 */}
+      {jobStatus && (
+        <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-md">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="font-semibold text-blue-800">검증 진행 상황</h3>
+            <span className="text-sm text-blue-600">
+              {jobStatus.status === 'running' ? '🔄 진행 중' :
+               jobStatus.status === 'completed' ? '✅ 완료' :
+               jobStatus.status === 'failed' ? '❌ 실패' : '⏳ 대기 중'}
+            </span>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex justify-between text-sm">
+              <span>{jobStatus.current}/{jobStatus.total}</span>
+              <span>{jobStatus.progress}%</span>
+            </div>
+
+            <div className="w-full bg-blue-200 rounded-full h-2">
+              <div
+                className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                style={{ width: `${jobStatus.progress}%` }}
+              ></div>
+            </div>
+
+            <p className="text-sm text-blue-700">{jobStatus.message}</p>
+
+            {jobStatus.elapsedTime > 0 && (
+              <div className="text-xs text-blue-600 flex justify-between">
+                <span>경과: {formatTime(jobStatus.elapsedTime)}</span>
+                {jobStatus.estimatedRemainingTime > 0 && (
+                  <span>예상 남은 시간: {formatTime(jobStatus.estimatedRemainingTime)}</span>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {error && (
         <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-md">
