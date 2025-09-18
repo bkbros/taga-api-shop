@@ -5,9 +5,9 @@ import { loadParams } from "@/lib/ssm";
 /** ===================== Types ===================== **/
 
 type Customer = {
-  user_id: string; // 일부 응답에서 로그인ID 역할로도 올 수 있어 대비
+  user_id: string;
   user_name?: string;
-  member_id: string; // 로그인 아이디(= 주문 필터에 넣는 값)
+  member_id: string; // 로그인 아이디(주문 조회에 사용)
   member_no?: string | number;
   created_date?: string;
   email?: string;
@@ -38,26 +38,55 @@ type Strategy = { name: "cellphone" | "member_id"; params: Record<string, string
 
 /** ===================== Utilities ===================== **/
 
-// 3개월 단위로 [start, end] 구간 생성 (end는 inclusive로 23:59:59 붙여 호출)
-function chunkBy3Months(from: Date, to: Date): Array<{ s: Date; e: Date }> {
-  const chunks: Array<{ s: Date; e: Date }> = [];
-  let s = new Date(from);
+// 'YYYY-MM-DD HH:mm:ss' 로 포맷
+const fmtYmdHms = (d: Date): string => {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const y = d.getFullYear();
+  const m = pad(d.getMonth() + 1);
+  const day = pad(d.getDate());
+  const hh = pad(d.getHours());
+  const mm = pad(d.getMinutes());
+  const ss = pad(d.getSeconds());
+  return `${y}-${m}-${day} ${hh}:${mm}:${ss}`;
+};
 
-  while (s <= to) {
-    const e = new Date(s);
-    e.setMonth(e.getMonth() + 3);
-    if (e > to) e.setTime(to.getTime());
-    chunks.push({ s: new Date(s), e: new Date(e) });
-    // 다음 구간 시작: e 다음날 00:00:00
-    s = new Date(e);
-    s.setDate(s.getDate() + 1);
-    s.setHours(0, 0, 0, 0);
-  }
-  return chunks;
+// Cafe24 규칙: 한 호출 범위는 start ~ (start+3개월-1초) 이내
+// to(상한)와 비교해 더 이른 쪽을 end로 사용
+function clampCafe24Window(start: Date, to: Date): { s: Date; e: Date } {
+  const s = new Date(start);
+  s.setHours(0, 0, 0, 0);
+
+  const maxEnd = new Date(s);
+  maxEnd.setMonth(maxEnd.getMonth() + 3);
+  maxEnd.setSeconds(maxEnd.getSeconds() - 1);
+
+  const endCap = new Date(to);
+  endCap.setHours(23, 59, 59, 0);
+
+  const e = new Date(Math.min(maxEnd.getTime(), endCap.getTime()));
+  return { s, e };
 }
 
-// YYYY-MM-DD + 시간 접미사
-const formatDate = (d: Date, end = false): string => d.toISOString().slice(0, 10) + (end ? " 23:59:59" : " 00:00:00");
+// 1년 등 긴 범위를 Cafe24 허용 윈도우(최대 3개월)로 분할
+function splitCafe24Windows(from: Date, to: Date): Array<{ s: Date; e: Date }> {
+  const out: Array<{ s: Date; e: Date }> = [];
+  let cursor = new Date(from);
+  cursor.setHours(0, 0, 0, 0);
+
+  const hardTo = new Date(to);
+  hardTo.setHours(23, 59, 59, 0);
+
+  while (cursor <= hardTo) {
+    const { s, e } = clampCafe24Window(cursor, hardTo);
+    out.push({ s, e });
+
+    const next = new Date(e);
+    next.setDate(next.getDate() + 1); // 다음날
+    next.setHours(0, 0, 0, 0);
+    cursor = next;
+  }
+  return out;
+}
 
 // 숫자 안전 파싱
 const toAmount = (v: unknown): number => {
@@ -74,7 +103,7 @@ async function sumOrdersAmount(params: {
   end: string;
   shopNo?: number;
   pageSize?: number;
-  maxPages?: number; // 안전 상한
+  maxPages?: number;
 }): Promise<number> {
   const {
     mallId,
@@ -84,7 +113,7 @@ async function sumOrdersAmount(params: {
     end,
     shopNo = 1,
     pageSize = 100,
-    maxPages = 50, // 최대 5,000건까지(100*50) 합산
+    maxPages = 50, // 5,000건 상한
   } = params;
 
   let offset = 0;
@@ -106,7 +135,7 @@ async function sumOrdersAmount(params: {
         },
         headers: { Authorization: `Bearer ${token}` },
         timeout: 8000,
-        validateStatus: (s: number) => s === 200 || s === 404, // 404면 빈 결과로 취급
+        validateStatus: (s: number) => s === 200 || s === 404,
       },
     );
 
@@ -115,7 +144,7 @@ async function sumOrdersAmount(params: {
 
     total += orders.reduce((sum: number, o: OrdersListOrder) => sum + toAmount(o.order_price_amount), 0);
 
-    if (orders.length < pageSize) break; // 마지막 페이지
+    if (orders.length < pageSize) break;
     offset += pageSize;
     pages += 1;
   }
@@ -132,7 +161,7 @@ export async function GET(req: Request) {
   const periodParam = url.searchParams.get("period") || "3months"; // "3months" | "1year"
   const shopNoRaw = url.searchParams.get("shop_no") ?? "1";
   const shopNo = Number.isNaN(Number(shopNoRaw)) ? 1 : Number(shopNoRaw);
-  const guess = url.searchParams.get("guess") !== "0"; // 기본적으로 숫자-only 추측(@k/@n) 허용
+  const guess = url.searchParams.get("guess") !== "0"; // 숫자-only @k/@n 자동시도 (기본 on)
 
   if (!userId) {
     return NextResponse.json({ error: "user_id parameter is required" }, { status: 400 });
@@ -152,7 +181,7 @@ export async function GET(req: Request) {
   console.log(`[DEBUG] Raw input: ${raw}`);
 
   const digits = raw.replace(/\D/g, "");
-  const isPhone = /^0\d{9,10}$/.test(digits); // 010/011/016... 10~11자리 가정
+  const isPhone = /^0\d{9,10}$/.test(digits); // 10~11자리
   const isNumericOnly = /^\d+$/.test(raw);
 
   try {
@@ -267,7 +296,7 @@ export async function GET(req: Request) {
     const customer = customerRes.data.customers[0];
     console.log(`[DEBUG] Customer located by ${foundBy}. member_id=${memberLoginId}`);
 
-    /** 2) Orders 조회: 3개월 제한 준수 **/
+    /** 2) Orders 조회: Cafe24 3개월 한도 엄격 준수 **/
 
     let totalOrders = 0;
     let totalPurchaseAmount = 0;
@@ -275,11 +304,13 @@ export async function GET(req: Request) {
     const now = new Date();
 
     if (periodParam === "3months") {
-      const start = new Date(now);
-      start.setMonth(start.getMonth() - 3);
+      // 최근 3개월 창을 규칙대로 클램프
+      const threeMonthsAgo = new Date(now);
+      threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
 
-      const startStr = formatDate(start, false);
-      const endStr = formatDate(now, true);
+      const { s, e } = clampCafe24Window(threeMonthsAgo, now);
+      const startStr = fmtYmdHms(s);
+      const endStr = fmtYmdHms(e);
 
       console.log(`[ORDERS API] 3개월 범위: ${startStr} ~ ${endStr}`);
 
@@ -313,21 +344,18 @@ export async function GET(req: Request) {
         });
       }
     } else {
-      // 1년
+      // 1년 → 3개월 윈도우로 분할 후 합산
       const endAll = new Date(now);
       const startAll = new Date(now);
       startAll.setFullYear(endAll.getFullYear() - 1);
 
-      console.log(`[ORDERS API] 1년 구간 분할: ${formatDate(startAll, false)} ~ ${formatDate(endAll, true)}`);
+      const windows = splitCafe24Windows(startAll, endAll);
+      console.log(`[ORDERS API] 1년 분할: ${windows.length}개 구간`);
 
-      const chunks = chunkBy3Months(startAll, endAll);
-      console.log(`[ORDERS API] 총 ${chunks.length}개 구간`);
+      for (const { s, e } of windows) {
+        const sStr = fmtYmdHms(s);
+        const eStr = fmtYmdHms(e);
 
-      for (const { s, e } of chunks) {
-        const sStr = formatDate(s, false);
-        const eStr = formatDate(e, true);
-
-        // Count
         const countRes: AxiosResponse<OrdersCountResponse> = await axios.get(
           `https://${mallId}.cafe24api.com/api/v2/admin/orders/count`,
           {
@@ -347,7 +375,6 @@ export async function GET(req: Request) {
         totalOrders += chunkCount;
 
         if (chunkCount > 0) {
-          // Amount per chunk
           const chunkAmount = await sumOrdersAmount({
             mallId,
             token: access_token,
@@ -355,8 +382,8 @@ export async function GET(req: Request) {
             start: sStr,
             end: eStr,
             shopNo,
-            pageSize: 200, // 1년 합산이므로 페이지 조금 키움
-            maxPages: 100, // 상한 (200*100 = 20,000건)
+            pageSize: 200,
+            maxPages: 100,
           });
           totalPurchaseAmount += chunkAmount;
         }
