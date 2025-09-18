@@ -244,13 +244,28 @@ async function processMembers(
     });
     const sheets = google.sheets({ version: "v4", auth });
 
-    const writeData = verificationResults.map(result => [
-      result.memberId || "",
-      result.isRegistered ? "가입" : "미가입",
-      result.memberGrade || "",
-      result.joinDate || "",
-      result.totalOrders || ""
-    ]);
+    // 병렬 처리로 뒤섞인 결과를 원래 행 순서로 정렬
+    const sortedResults = verificationResults.sort((a, b) => a.rowIndex - b.rowIndex);
+
+    const writeData = sortedResults.map(result => {
+      // 날짜 형식 정리 (ISO -> YYYY-MM-DD)
+      let cleanJoinDate = "";
+      if (result.joinDate) {
+        try {
+          cleanJoinDate = result.joinDate.split('T')[0]; // 2025-09-01T05:00:44+09:00 -> 2025-09-01
+        } catch {
+          cleanJoinDate = result.joinDate;
+        }
+      }
+
+      return [
+        result.memberId || "",
+        result.isRegistered ? "가입" : "미가입",
+        result.memberGrade || "",
+        cleanJoinDate,
+        result.totalOrders || ""
+      ];
+    });
 
     const writeRange = `${sheetName}!AC2:AG${writeData.length + 1}`;
     await sheets.spreadsheets.values.update({
