@@ -27,16 +27,18 @@ type OrdersCountResponse = {
 type OrdersListOrder = {
   order_id?: string;
   order_price_amount?: string; // 금액 합산에 사용
-  // 필요한 필드가 있으면 여기에 확장
+  // 필요한 필드가 있으면 확장
 };
 
 type OrdersListResponse = {
   orders: OrdersListOrder[];
 };
 
+type Strategy = { name: "cellphone" | "member_id"; params: Record<string, string | number> };
+
 /** ===================== Utilities ===================== **/
 
-// 3개월 단위로 [start, end] 구간을 생성 (end는 inclusive로 23:59:59 붙여서 호출)
+// 3개월 단위로 [start, end] 구간 생성 (end는 inclusive로 23:59:59 붙여 호출)
 function chunkBy3Months(from: Date, to: Date): Array<{ s: Date; e: Date }> {
   const chunks: Array<{ s: Date; e: Date }> = [];
   let s = new Date(from);
@@ -120,8 +122,6 @@ async function sumOrdersAmount(params: {
   return total;
 }
 
-type Strategy = { name: "cellphone" | "member_id"; params: Record<string, string | number> };
-
 /** ===================== Handler ===================== **/
 
 export async function GET(req: Request) {
@@ -132,6 +132,7 @@ export async function GET(req: Request) {
   const periodParam = url.searchParams.get("period") || "3months"; // "3months" | "1year"
   const shopNoRaw = url.searchParams.get("shop_no") ?? "1";
   const shopNo = Number.isNaN(Number(shopNoRaw)) ? 1 : Number(shopNoRaw);
+  const guess = url.searchParams.get("guess") !== "0"; // 기본적으로 숫자-only 추측(@k/@n) 허용
 
   if (!userId) {
     return NextResponse.json({ error: "user_id parameter is required" }, { status: 400 });
@@ -172,37 +173,44 @@ export async function GET(req: Request) {
 
     if (isPhone) {
       strategies.push({ name: "cellphone", params: { limit: 1, cellphone: digits } });
-    } else {
-      if (isNumericOnly) {
-        // 숫자-only → 먼저 member_id로 1회 탐색 시도
-        const trial: AxiosResponse<CustomersResponse> = await axios.get(
+    } else if (isNumericOnly) {
+      // 숫자-only → 추측 모드면 @k/@n까지 후보 생성
+      const candidates: string[] = guess ? [raw, `${raw}@k`, `${raw}@n`] : [raw];
+      let matched: string | undefined;
+
+      for (const cand of candidates) {
+        const t: AxiosResponse<CustomersResponse> = await axios.get(
           `https://${mallId}.cafe24api.com/api/v2/admin/customers`,
           {
-            params: { limit: 1, member_id: raw },
+            params: { limit: 1, member_id: cand },
             headers: authHeaders,
             timeout: 6000,
             validateStatus: () => true,
           },
         );
-
-        if (trial.status === 200 && trial.data?.customers?.length > 0) {
-          strategies.push({ name: "member_id", params: { limit: 1, member_id: raw } });
-          console.log(`[DEBUG] 숫자-only지만 member_id로 매칭 가능: ${raw}`);
-        } else {
-          console.log(`[ERROR] Unsupported identifier: ${raw} (numeric-only, not phone, not member_id)`);
-          return NextResponse.json(
-            {
-              error: "Unsupported identifier",
-              hint: "member_id(로그인 아이디) 또는 휴대폰 번호(010...)를 전달하세요.",
-              received: raw,
-              examples: ["4346815169@k", "2225150920@n", "yoonhyerin", "01012345678"],
-            },
-            { status: 400 },
-          );
+        if (t.status === 200 && t.data?.customers?.length > 0) {
+          matched = cand;
+          break;
         }
-      } else {
-        strategies.push({ name: "member_id", params: { limit: 1, member_id: raw } });
       }
+
+      if (matched) {
+        strategies.push({ name: "member_id", params: { limit: 1, member_id: matched } });
+        console.log(`[DEBUG] 숫자-only 매칭 성공: ${raw} -> ${matched}`);
+      } else {
+        console.log(`[ERROR] Unsupported identifier: ${raw} (numeric-only, not phone, not member_id)`);
+        return NextResponse.json(
+          {
+            error: "Unsupported identifier",
+            hint: "member_id(로그인 아이디) 또는 휴대폰 번호(010...)를 전달하세요.",
+            received: raw,
+            examples: ["4346815169@k", "2225150920@n", "yoonhyerin", "01012345678"],
+          },
+          { status: 400 },
+        );
+      }
+    } else {
+      strategies.push({ name: "member_id", params: { limit: 1, member_id: raw } });
     }
 
     let customerRes: AxiosResponse<CustomersResponse> | undefined;
@@ -239,7 +247,7 @@ export async function GET(req: Request) {
       } catch (err: unknown) {
         const ax = err as AxiosError<unknown>;
         console.log(`[CUSTOMERS API] ${st.name} 실패`, ax.response?.status, ax.response?.data);
-        // 다른 전략 있으면 계속 진행
+        // 다음 전략 시도
       }
     }
 
@@ -257,7 +265,6 @@ export async function GET(req: Request) {
     }
 
     const customer = customerRes.data.customers[0];
-    // 개인정보 과다 로그는 지양
     console.log(`[DEBUG] Customer located by ${foundBy}. member_id=${memberLoginId}`);
 
     /** 2) Orders 조회: 3개월 제한 준수 **/
@@ -376,7 +383,6 @@ export async function GET(req: Request) {
 
     return NextResponse.json(customerInfo);
   } catch (error: unknown) {
-    // 상세 에러 매핑
     if (axios.isAxiosError(error)) {
       const ax = error as AxiosError<unknown>;
       const status = ax.response?.status;
