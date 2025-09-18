@@ -153,21 +153,34 @@ async function processMembers(
           const cleanPhone = member.phone.replace(/\D/g, "");
           if (cleanPhone) {
             try {
-              const response = await fetch(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
+              const searchParams = new URLSearchParams({
+                cellphone: cleanPhone,
+                limit: '1'
+              });
+
+              const response = await fetch(`https://${mallId}.cafe24api.com/api/v2/admin/customers?${searchParams}`, {
                 method: 'GET',
                 headers: {
                   'Authorization': `Bearer ${access_token}`,
                   'Content-Type': 'application/json',
                   'X-Cafe24-Api-Version': '2025-06-01'
-                },
-                // URLSearchParams로 쿼리 구성
+                }
               });
 
               if (response.ok) {
                 const data = await response.json();
+                console.log(`[JOB ${jobId}] ${member.name}(${cleanPhone}) 검색 결과:`, data.customers?.length || 0, '건');
                 if (data.customers && data.customers.length > 0) {
                   customer = data.customers[0];
+                  console.log(`[JOB ${jobId}] ${member.name} 회원 발견:`, {
+                    member_id: customer.member_id,
+                    group_no: customer.group_no,
+                    created_date: customer.created_date,
+                    available_fields: Object.keys(customer)
+                  });
                 }
+              } else {
+                console.log(`[JOB ${jobId}] ${member.name}(${cleanPhone}) API 응답 실패: ${response.status}`);
               }
             } catch (error) {
               console.log(`[JOB ${jobId}] cellphone 검색 실패: ${error}`);
@@ -175,6 +188,16 @@ async function processMembers(
           }
 
           if (customer) {
+            // 구매금액 정보 추출 (가능한 필드들 확인)
+            let totalPurchaseAmount = 0;
+            if (customer.total_purchase_amount !== undefined) {
+              totalPurchaseAmount = customer.total_purchase_amount;
+            } else if (customer.purchase_amount !== undefined) {
+              totalPurchaseAmount = customer.purchase_amount;
+            } else if (customer.accumulated_purchase_amount !== undefined) {
+              totalPurchaseAmount = customer.accumulated_purchase_amount;
+            }
+
             // 가입 회원
             verificationResults.push({
               rowIndex: member.rowIndex,
@@ -184,7 +207,7 @@ async function processMembers(
               memberId: customer.member_id,
               memberGrade: customer.group_no || 1,
               joinDate: customer.created_date,
-              totalPurchaseAmount: 0 // 간단화를 위해 0으로 설정
+              totalPurchaseAmount: totalPurchaseAmount
             });
           } else {
             // 미가입 회원
