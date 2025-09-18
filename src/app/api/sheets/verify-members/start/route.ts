@@ -85,164 +85,91 @@ export async function POST(req: Request) {
 
     console.log(`파싱된 회원 수: ${members.length}`);
 
-    // 동기 처리로 변경 (병렬 처리로 빠르게)
-    console.log(`회원 검증 시작: ${members.length}명`);
-
-    const verificationResults = await processMembers(members, spreadsheetId, sheetName, credentials, mallId, access_token);
-
-    // 결과 반환
-    const summary = {
-      total: verificationResults.length,
-      registered: verificationResults.filter(r => r.isRegistered).length,
-      unregistered: verificationResults.filter(r => !r.isRegistered).length,
-      errors: verificationResults.filter(r => r.error).length
-    };
-
-    return NextResponse.json({
-      success: true,
-      message: `${members.length}명 검증 완료`,
-      statistics: summary
-    });
-
-  } catch (error) {
-    console.error("작업 시작 실패:", error);
-    return NextResponse.json(
-      { error: "작업 시작에 실패했습니다", details: error instanceof Error ? error.message : String(error) },
-      { status: 500 }
-    );
-  }
-}
-
-// 회원 처리 함수 (동기)
-async function processMembers(
-  members: SheetMember[],
-  spreadsheetId: string,
-  sheetName: string,
-  credentials: GoogleCredentials,
-  mallId: string,
-  access_token: string
-): Promise<VerificationResult[]> {
-  console.log(`회원 처리 시작: ${members.length}명`);
-
-  try {
-    // 파라미터로 받은 값들 사용
+    // 2. Cafe24 토큰 로드
+    const { access_token } = await loadParams(["access_token"]);
+    const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
 
     const verificationResults: VerificationResult[] = [];
 
-    // 배치 처리 (10명씩 - 속도 향상)
-    const batchSize = 10;
-    const batches = [];
-    for (let i = 0; i < members.length; i += batchSize) {
-      batches.push(members.slice(i, i + batchSize));
-    }
+    // 3. 각 회원 검증 (순차 처리로 안정성 확보)
+    for (const member of members) {
+      try {
+        let customer = null;
 
-    console.log(`총 ${batches.length}개 배치로 나누어 처리 시작`);
+        // cellphone으로 검색
+        const cleanPhone = member.phone.replace(/\D/g, "");
+        if (cleanPhone) {
+          try {
+            const searchParams = new URLSearchParams({
+              cellphone: cleanPhone,
+              limit: '1'
+            });
 
-    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-      const batch = batches[batchIndex];
-      console.log(`배치 ${batchIndex + 1}/${batches.length} 처리 시작 (${batch.length}명)`);
-
-      // 배치 내 회원들을 병렬 처리
-      const batchPromises = batch.map(async (member) => {
-        try {
-          // 각 회원 검증 로직
-          let customer = null;
-
-          // cellphone으로 검색
-          const cleanPhone = member.phone.replace(/\D/g, "");
-          if (cleanPhone) {
-            try {
-              const searchParams = new URLSearchParams({
-                cellphone: cleanPhone,
-                limit: '1'
-              });
-
-              const response = await fetch(`https://${mallId}.cafe24api.com/api/v2/admin/customers?${searchParams}`, {
-                method: 'GET',
-                headers: {
-                  'Authorization': `Bearer ${access_token}`,
-                  'Content-Type': 'application/json',
-                  'X-Cafe24-Api-Version': '2025-06-01'
-                }
-              });
-
-              if (response.ok) {
-                const data = await response.json();
-                console.log(`${member.name}(${cleanPhone}) 검색 결과:`, data.customers?.length || 0, '건');
-                if (data.customers && data.customers.length > 0) {
-                  customer = data.customers[0];
-                  console.log(`${member.name} 회원 발견: ${customer.member_id}`);
-                }
-              } else {
-                console.log(`${member.name}(${cleanPhone}) API 응답 실패: ${response.status}`);
+            const response = await fetch(`https://${mallId}.cafe24api.com/api/v2/admin/customers?${searchParams}`, {
+              method: 'GET',
+              headers: {
+                'Authorization': `Bearer ${access_token}`,
+                'Content-Type': 'application/json',
+                'X-Cafe24-Api-Version': '2025-06-01'
               }
-            } catch (error) {
-              console.log(`cellphone 검색 실패: ${error}`);
+            });
+
+            if (response.ok) {
+              const data = await response.json();
+              console.log(`${member.name}(${cleanPhone}) 검색 결과:`, data.customers?.length || 0, '건');
+              if (data.customers && data.customers.length > 0) {
+                customer = data.customers[0];
+                console.log(`${member.name} 회원 발견: ${customer.member_id}`);
+              }
+            } else {
+              console.log(`${member.name}(${cleanPhone}) API 응답 실패: ${response.status}`);
             }
+          } catch (error) {
+            console.log(`cellphone 검색 실패: ${error}`);
           }
+        }
 
-          if (customer) {
-            // 속도 향상을 위해 구매건수 조회 생략 (필요시 별도 구현)
-            const totalOrders = 0; // 임시로 0으로 설정
-
-            // 가입 회원
-            return {
-              rowIndex: member.rowIndex,
-              name: member.name,
-              phone: member.phone,
-              isRegistered: true,
-              memberId: customer.member_id,
-              memberGrade: customer.group_no || 1,
-              joinDate: customer.created_date,
-              totalOrders: totalOrders
-            };
-          } else {
-            // 미가입 회원
-            return {
-              rowIndex: member.rowIndex,
-              name: member.name,
-              phone: member.phone,
-              isRegistered: false
-            };
-          }
-
-        } catch (error) {
-          console.error(`${member.name} 처리 실패:`, error);
-          return {
+        if (customer) {
+          // 가입 회원 (구매건수는 0으로 설정하여 속도 향상)
+          verificationResults.push({
             rowIndex: member.rowIndex,
             name: member.name,
             phone: member.phone,
-            isRegistered: false,
-            error: error instanceof Error ? error.message : "처리 중 오류 발생"
-          };
+            isRegistered: true,
+            memberId: customer.member_id,
+            memberGrade: customer.group_no || 1,
+            joinDate: customer.created_date,
+            totalOrders: 0
+          });
+        } else {
+          // 미가입 회원
+          verificationResults.push({
+            rowIndex: member.rowIndex,
+            name: member.name,
+            phone: member.phone,
+            isRegistered: false
+          });
         }
-      });
 
-      // 배치 내 모든 회원을 동시에 처리하고 결과 대기
-      const batchResults = await Promise.all(batchPromises);
-      verificationResults.push(...batchResults);
+        // API 호출 간격 (Rate Limit 방지)
+        await new Promise(resolve => setTimeout(resolve, 200));
 
-      // 진행 로그
-      const processed = Math.min((batchIndex + 1) * batchSize, members.length);
-      console.log(`배치 ${batchIndex + 1} 완료 (${batchResults.length}명 처리) - 총 진행: ${processed}/${members.length}`);
-
-      // 배치 간 휴식 (단축)
-      if (batchIndex < batches.length - 1) {
-        console.log(`배치 ${batchIndex + 1} 완료, 잠시 휴식`);
-        await new Promise(resolve => setTimeout(resolve, 500));
+      } catch (error) {
+        console.error(`${member.name} 처리 실패:`, error);
+        verificationResults.push({
+          rowIndex: member.rowIndex,
+          name: member.name,
+          phone: member.phone,
+          isRegistered: false,
+          error: error instanceof Error ? error.message : "처리 중 오류 발생"
+        });
       }
     }
 
-    // 스프레드시트에 결과 쓰기
+    // 4. 스프레드시트에 결과 쓰기
     console.log("스프레드시트에 결과 쓰기 중");
 
-    const auth = new google.auth.GoogleAuth({
-      credentials,
-      scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-    });
-    const sheets = google.sheets({ version: "v4", auth });
-
-    // 병렬 처리로 뒤섞인 결과를 원래 행 순서로 정렬
+    // 결과를 원래 행 순서로 정렬
     const sortedResults = verificationResults.sort((a, b) => a.rowIndex - b.rowIndex);
 
     const writeData = sortedResults.map(result => {
@@ -250,7 +177,7 @@ async function processMembers(
       let cleanJoinDate = "";
       if (result.joinDate) {
         try {
-          cleanJoinDate = result.joinDate.split('T')[0]; // 2025-09-01T05:00:44+09:00 -> 2025-09-01
+          cleanJoinDate = result.joinDate.split('T')[0];
         } catch {
           cleanJoinDate = result.joinDate;
         }
@@ -273,12 +200,27 @@ async function processMembers(
       requestBody: { values: writeData }
     });
 
-    // 작업 완료 - 결과 반환
-    console.log("모든 작업 완료");
-    return verificationResults;
+    // 5. 결과 반환
+    const summary = {
+      total: verificationResults.length,
+      registered: verificationResults.filter(r => r.isRegistered).length,
+      unregistered: verificationResults.filter(r => !r.isRegistered).length,
+      errors: verificationResults.filter(r => r.error).length
+    };
+
+    console.log("모든 작업 완료:", summary);
+
+    return NextResponse.json({
+      success: true,
+      message: `${members.length}명 검증 완료`,
+      statistics: summary
+    });
 
   } catch (error) {
-    console.error("전체 작업 실패:", error);
-    throw error;
+    console.error("작업 실패:", error);
+    return NextResponse.json(
+      { error: "작업에 실패했습니다", details: error instanceof Error ? error.message : String(error) },
+      { status: 500 }
+    );
   }
 }
