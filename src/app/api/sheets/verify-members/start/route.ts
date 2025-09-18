@@ -32,7 +32,7 @@ interface VerificationResult {
   memberId?: string;
   memberGrade?: number;
   joinDate?: string;
-  totalPurchaseAmount?: number;
+  totalOrders?: number;
   error?: string;
 }
 
@@ -188,14 +188,35 @@ async function processMembers(
           }
 
           if (customer) {
-            // 구매금액 정보 추출 (가능한 필드들 확인)
-            let totalPurchaseAmount = 0;
-            if (customer.total_purchase_amount !== undefined) {
-              totalPurchaseAmount = customer.total_purchase_amount;
-            } else if (customer.purchase_amount !== undefined) {
-              totalPurchaseAmount = customer.purchase_amount;
-            } else if (customer.accumulated_purchase_amount !== undefined) {
-              totalPurchaseAmount = customer.accumulated_purchase_amount;
+            // 구매건수 조회 (최근 3개월)
+            let totalOrders = 0;
+            try {
+              const memberId = customer.member_id;
+              if (memberId) {
+                // 최근 3개월 구매건수 조회
+                const now = new Date();
+                const threeMonthsAgo = new Date(now.getTime() - (90 * 24 * 60 * 60 * 1000));
+
+                const startDate = threeMonthsAgo.toISOString().split('T')[0] + ' 00:00:00';
+                const endDate = now.toISOString().split('T')[0] + ' 23:59:59';
+
+                const ordersParams = new URLSearchParams({\n                  member_id: memberId,\n                  start_date: startDate,\n                  end_date: endDate,\n                  order_status: 'N40,N50'\n                });\n\n                const ordersResponse = await fetch(`https://${mallId}.cafe24api.com/api/v2/admin/orders/count?${ordersParams}`, {
+                  method: 'GET',
+                  headers: {
+                    'Authorization': `Bearer ${access_token}`,
+                    'Content-Type': 'application/json',
+                    'X-Cafe24-Api-Version': '2025-06-01'
+                  },
+                });
+
+                if (ordersResponse.ok) {
+                  const ordersData = await ordersResponse.json();
+                  totalOrders = ordersData.count || 0;
+                  console.log(`[JOB ${jobId}] ${member.name} 구매건수: ${totalOrders}건`);
+                }
+              }
+            } catch (error) {
+              console.log(`[JOB ${jobId}] ${member.name} 구매건수 조회 실패:`, error);
             }
 
             // 가입 회원
@@ -207,7 +228,7 @@ async function processMembers(
               memberId: customer.member_id,
               memberGrade: customer.group_no || 1,
               joinDate: customer.created_date,
-              totalPurchaseAmount: totalPurchaseAmount
+              totalOrders: totalOrders
             });
           } else {
             // 미가입 회원
@@ -259,7 +280,7 @@ async function processMembers(
       result.isRegistered ? "가입" : "미가입",
       result.memberGrade || "",
       result.joinDate || "",
-      result.totalPurchaseAmount || ""
+      result.totalOrders || ""
     ]);
 
     const writeRange = `${sheetName}!AC2:AG${writeData.length + 1}`;
