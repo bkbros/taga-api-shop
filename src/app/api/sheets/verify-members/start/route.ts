@@ -1,275 +1,625 @@
-// src/app/api/sheets/verify-members/start/route.ts
+// src/app/api/customer/info/route.ts
 import { NextResponse } from "next/server";
-import { google } from "googleapis";
+import axios, { AxiosError, AxiosResponse } from "axios";
+import { loadParams } from "@/lib/ssm";
 
-/** ========= Types ========= **/
+/** ===================== Types ===================== **/
 
-type GoogleCredentials = {
-  type: string;
-  project_id: string;
-  private_key_id: string;
-  private_key: string;
-  client_email: string;
-  client_id: string;
-  auth_uri: string;
-  token_uri: string;
-  auth_provider_x509_cert_url: string;
-  client_x509_cert_url: string;
+type CustomerGroup = {
+  group_no?: number;
+  group_name?: string;
 };
 
-interface SheetMember {
-  name: string;
-  phone: string;
-  rowIndex: number; // 1-based row number in sheet
-}
-
-// /api/customer/info 성공 응답 형태 (우리가 만든 라우트 기준)
-interface InfoSuccess {
-  userId?: string;
-  userName?: string;
-  memberId: string;
-  memberGrade?: string; // 등급명 (예: "VIP 3")
-  memberGradeNo?: number; // 등급번호 (숫자)
-  joinDate?: string; // ISO or YYYY-MM-DD
-  totalOrders: number; // 최근 3개월 주문 건수
-  period?: "3months" | "1year";
-  shopNo?: number;
-  searchMethod?: "cellphone" | "member_id";
-  processingTime?: number;
-}
-
-interface InfoError {
-  error: string;
-  details?: unknown;
-}
-
-/** ========= Utils ========= **/
-
-const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
-
-const toDateCell = (v?: string): string => {
-  if (!v) return "";
-  // "YYYY-MM-DDTHH:mm:ss" | "YYYY-MM-DD HH:mm:ss" → "YYYY-MM-DD"
-  if (v.includes("T")) return v.split("T")[0]!;
-  if (v.includes(" ")) return v.split(" ")[0]!;
-  return v;
+type Customer = {
+  user_id: string;
+  user_name?: string;
+  member_id: string; // 로그인 아이디(주문 조회에 사용)
+  member_no?: string | number;
+  created_date?: string;
+  email?: string;
+  phone?: string;
+  last_login_date?: string;
+  group?: CustomerGroup; // 보통 여기로 옴
+  group_no?: number; // 쇼핑몰 설정에 따라 top-level 로 올 수도 있음
 };
 
-const isInfoError = (v: unknown): v is InfoError => typeof v === "object" && v !== null && "error" in v;
+type CustomersResponse = {
+  customers: Customer[];
+};
 
-/** ========= Handler ========= **/
+type OrdersCountResponse = {
+  count: number;
+};
 
-export async function POST(req: Request) {
-  try {
-    const { spreadsheetId, sheetName, useEnvCredentials, serviceAccountKey, shopNo } = await req.json();
+type OrdersListOrder = {
+  order_id?: string;
+  order_price_amount?: string;
+};
 
-    if (!spreadsheetId) {
-      return NextResponse.json({ error: "spreadsheetId가 필요합니다" }, { status: 400 });
-    }
-    const targetSheet = (sheetName || "").trim() || "Sheet1";
-    const shopNoNum = Number.isInteger(Number(shopNo)) ? Number(shopNo) : 1;
+type OrdersListResponse = {
+  orders: OrdersListOrder[];
+};
 
-    // Google Sheets 인증
-    let credentials: GoogleCredentials;
-    if (useEnvCredentials) {
-      const googleCredJson = process.env.GOOGLE_CRED_JSON;
-      if (!googleCredJson) {
-        return NextResponse.json({ error: "환경변수 GOOGLE_CRED_JSON 이 설정되지 않았습니다" }, { status: 500 });
-      }
-      credentials = JSON.parse(Buffer.from(googleCredJson, "base64").toString("utf-8")) as GoogleCredentials;
-    } else {
-      if (!serviceAccountKey) {
-        return NextResponse.json({ error: "serviceAccountKey가 필요합니다" }, { status: 400 });
-      }
-      credentials = JSON.parse(serviceAccountKey) as GoogleCredentials;
-    }
+type Strategy = { name: "cellphone" | "member_id"; params: Record<string, string | number> };
 
-    const auth = new google.auth.GoogleAuth({
-      credentials,
-      scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-    });
-    const sheets = google.sheets({ version: "v4", auth });
+type Period = "3months" | "1year";
 
-    // 1) 시트에서 입력 데이터 읽기 (I:이름, J:연락처)
-    const sourceResponse = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: `${targetSheet}!I:J`,
-    });
+/** ===================== KST Utilities ===================== **/
 
-    const rows = sourceResponse.data.values;
-    if (!rows || rows.length <= 1) {
-      return NextResponse.json({ error: "스프레드시트에 데이터가 없습니다" }, { status: 400 });
-    }
+const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
 
-    const members: SheetMember[] = rows
-      .slice(1)
-      .map((row, idx) => ({
-        name: (row?.[0] ?? "").toString().trim(),
-        phone: (row?.[1] ?? "").toString().trim(),
-        rowIndex: idx + 2,
-      }))
-      .filter(m => m.name && m.phone);
+const pad2 = (n: number) => String(n).padStart(2, "0");
 
-    console.log(`[SHEETS] 파싱된 회원 수: ${members.length}`);
+// KST 달력 기준으로 포맷: 'YYYY-MM-DD HH:mm:ss'
+function fmtKST(d: Date): string {
+  const k = new Date(d.getTime() + KST_OFFSET_MS);
+  const y = k.getUTCFullYear();
+  const m = pad2(k.getUTCMonth() + 1);
+  const day = pad2(k.getUTCDate());
+  const hh = pad2(k.getUTCHours());
+  const mm = pad2(k.getUTCMinutes());
+  const ss = pad2(k.getUTCSeconds());
+  return `${y}-${m}-${day} ${hh}:${mm}:${ss}`;
+}
 
-    // 2) 내 서버의 /api/customer/info 호출 준비 (origin 계산)
-    const url = new URL(req.url);
-    const origin = `${url.protocol}//${url.host}`;
+// 주어진 KST 달력 시각을 나타내는 Date 생성(내부적으로 UTC기반으로 저장)
+function fromKst(y: number, m: number, d: number, hh = 0, mm = 0, ss = 0): Date {
+  const utc = Date.UTC(y, m - 1, d, hh, mm, ss);
+  return new Date(utc - KST_OFFSET_MS);
+}
 
-    // 3) 각 회원 처리 (순차 + 소폭 대기)
-    type RowResult = {
-      rowIndex: number;
-      memberId: string;
-      isRegisteredEmoji: "⭕" | "❌";
-      memberGradeNoCell: number | ""; // 숫자 셀 유지
-      joinDateCell: string;
-      orders3mCell: number | ""; // 숫자 셀 유지
-      hadError: boolean;
-    };
+// Date를 KST 달력으로 해석했을 때의 Y/M/D 반환
+function getKstYmd(d: Date): { y: number; m: number; d: number } {
+  const k = new Date(d.getTime() + KST_OFFSET_MS);
+  return { y: k.getUTCFullYear(), m: k.getUTCMonth() + 1, d: k.getUTCDate() };
+}
 
-    const results: RowResult[] = [];
+function kstStartOfDay(d: Date): Date {
+  const { y, m, d: dd } = getKstYmd(d);
+  return fromKst(y, m, dd, 0, 0, 0);
+}
 
-    for (const member of members) {
-      const cleanPhone = member.phone.replace(/\D/g, "");
-      let memberId = "";
-      let isRegisteredEmoji: "⭕" | "❌" = "❌";
-      let memberGradeNoCell: number | "" = "";
-      let joinDateCell = "";
-      let orders3mCell: number | "" = "";
-      let hadError = false;
+function kstEndOfDay(d: Date): Date {
+  const { y, m, d: dd } = getKstYmd(d);
+  return fromKst(y, m, dd, 23, 59, 59);
+}
 
-      // 휴대폰 10~11자리(0으로 시작)만 조회
-      if (!/^0\d{9,10}$/.test(cleanPhone)) {
-        results.push({
-          rowIndex: member.rowIndex,
-          memberId,
-          isRegisteredEmoji,
-          memberGradeNoCell,
-          joinDateCell,
-          orders3mCell,
-          hadError: true,
-        });
-        continue;
-      }
+// KST 달력 기준 월 이동
+function addMonthsKST(base: Date, months: number): Date {
+  const k = new Date(base.getTime() + KST_OFFSET_MS);
+  k.setUTCMonth(k.getUTCMonth() + months);
+  return new Date(k.getTime() - KST_OFFSET_MS);
+}
 
-      try {
-        const infoUrl =
-          `${origin}/api/customer/info?` +
-          new URLSearchParams({
-            user_id: cleanPhone,
-            period: "3months",
-            shop_no: String(shopNoNum),
-            guess: "1",
-          }).toString();
+// Cafe24 한 호출 범위: start(00:00:00 KST) ~ min(start+3개월-1초, capEndOfDay(KST))
+function clampCafe24WindowKST(startKstDay: Date, capKstDay: Date): { s: Date; e: Date } {
+  const s = kstStartOfDay(startKstDay);
+  const maxEnd = addMonthsKST(s, +3);
+  maxEnd.setUTCSeconds(maxEnd.getUTCSeconds() - 1); // 3개월 - 1초
+  const capEnd = kstEndOfDay(capKstDay);
+  const e = new Date(Math.min(maxEnd.getTime(), capEnd.getTime()));
+  return { s, e };
+}
 
-        const resp = await fetch(infoUrl, { method: "GET" });
+// 긴 범위를 KST 기준 3개월 윈도우로 분할
+function splitCafe24WindowsKST(fromKstDate: Date, toKstDate: Date): Array<{ s: Date; e: Date }> {
+  const out: Array<{ s: Date; e: Date }> = [];
+  let cursor = kstStartOfDay(fromKstDate);
+  const cap = kstEndOfDay(toKstDate);
 
-        if (!resp.ok) {
-          if (resp.status === 404) {
-            // 미가입
-            isRegisteredEmoji = "❌";
-          } else {
-            hadError = true;
-            console.log(`[INFO API] ${member.name}/${cleanPhone} 실패 status=${resp.status}`);
+  while (cursor.getTime() <= cap.getTime()) {
+    const { s, e } = clampCafe24WindowKST(cursor, cap);
+    out.push({ s, e });
+
+    // 다음 윈도우 시작: e 다음 날 00:00:00 (KST)
+    const { y, m, d } = getKstYmd(e);
+    cursor = fromKst(y, m, d + 1, 0, 0, 0);
+  }
+  return out;
+}
+
+/** ===================== Rate Limiting & Concurrency Control ===================== **/
+
+class RateLimiter {
+  private queue: Array<() => Promise<unknown>> = [];
+  private running = 0;
+  private lastRequestTime = 0;
+
+  constructor(
+    private maxConcurrent = 3, // 동시 요청 수 제한
+    private minInterval = 200, // 최소 요청 간격 (ms)
+  ) {}
+
+  async execute<T>(fn: () => Promise<T>): Promise<T> {
+    return new Promise((resolve, reject) => {
+      this.queue.push(async () => {
+        try {
+          // 최소 간격 보장
+          const now = Date.now();
+          const timeSinceLastRequest = now - this.lastRequestTime;
+          if (timeSinceLastRequest < this.minInterval) {
+            await this.delay(this.minInterval - timeSinceLastRequest);
           }
-        } else {
-          const payload: InfoSuccess | InfoError = await resp.json();
-          if (isInfoError(payload)) {
-            hadError = true;
-            console.log(`[INFO API] ${member.name}/${cleanPhone} payload error=`, payload.error);
-          } else {
-            // 성공
-            memberId = payload.memberId ?? "";
-            isRegisteredEmoji = "⭕";
 
-            // 등급번호: 숫자 그 자체!
-            if (typeof payload.memberGradeNo === "number") {
-              memberGradeNoCell = payload.memberGradeNo;
-            } else {
-              memberGradeNoCell = ""; // 못 받으면 빈칸
-            }
-
-            joinDateCell = toDateCell(payload.joinDate);
-            orders3mCell = typeof payload.totalOrders === "number" ? payload.totalOrders : 0;
-          }
+          this.lastRequestTime = Date.now();
+          const result = await fn();
+          resolve(result);
+        } catch (error) {
+          reject(error);
+        } finally {
+          this.running--;
+          this.processQueue();
         }
-      } catch (e) {
-        hadError = true;
-        console.log(`[INFO API] ${member.name}/${cleanPhone} 호출 예외:`, e);
-      }
-
-      results.push({
-        rowIndex: member.rowIndex,
-        memberId,
-        isRegisteredEmoji,
-        memberGradeNoCell,
-        joinDateCell,
-        orders3mCell,
-        hadError,
       });
 
-      // Cafe24 레이트 리밋 보호 (info 라우트 내부에서도 보호하지만 여기도 대기)
-      await sleep(250);
-    }
-
-    // 4) 시트에 쓰기
-    // - AC: 회원ID
-    // - AD: 가입여부(⭕/❌)
-    // - AE: 등급번호(숫자)
-    // - AF: 가입일(YYYY-MM-DD)
-    // - AG: 최근3개월 구매건수(숫자)
-    // 행 정렬 + 원본 행 번호에 맞춰 빈 줄 채우기
-    const sorted = results.sort((a, b) => a.rowIndex - b.rowIndex);
-    const maxRowIndex = sorted.length ? sorted[sorted.length - 1].rowIndex : 1;
-    const rowsMatrix: (string | number)[][] = Array.from({ length: Math.max(0, maxRowIndex - 1) }, () => [
-      "",
-      "",
-      "",
-      "",
-      "",
-    ]);
-
-    for (const r of sorted) {
-      const i = r.rowIndex - 2; // 0-based index for AC row
-      if (i < 0 || i >= rowsMatrix.length) continue;
-      rowsMatrix[i] = [
-        r.memberId, // AC
-        r.isRegisteredEmoji, // AD
-        r.memberGradeNoCell, // AE (number | "")
-        r.joinDateCell, // AF
-        r.orders3mCell, // AG (number | "")
-      ];
-    }
-
-    const writeRange = `${targetSheet}!AC2:AG${maxRowIndex}`;
-    await sheets.spreadsheets.values.update({
-      spreadsheetId,
-      range: writeRange,
-      valueInputOption: "RAW",
-      requestBody: { values: rowsMatrix },
+      this.processQueue();
     });
+  }
 
-    // 5) 요약 통계
-    const summary = {
-      total: results.length,
-      registered: results.filter(r => r.isRegisteredEmoji === "⭕").length,
-      unregistered: results.filter(r => r.isRegisteredEmoji === "❌" && !r.hadError).length,
-      errors: results.filter(r => r.hadError).length,
+  private processQueue() {
+    if (this.running >= this.maxConcurrent || this.queue.length === 0) {
+      return;
+    }
+    const task = this.queue.shift();
+    if (task) {
+      this.running++;
+      task();
+    }
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+}
+
+// 전역 rate limiter 인스턴스
+const rateLimiter = new RateLimiter(3, 200);
+
+/** ===================== Retry Logic ===================== **/
+
+async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, baseDelay = 1000): Promise<T> {
+  let lastError: Error;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await rateLimiter.execute(fn);
+    } catch (error) {
+      lastError = error as Error;
+
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status;
+
+        // 429 (Rate Limit) 또는 5xx 에러만 재시도
+        if (status === 429 || (status && status >= 500)) {
+          if (attempt < maxRetries) {
+            const delay = baseDelay * Math.pow(2, attempt); // 지수 백오프
+            console.log(`[RETRY] Attempt ${attempt + 1}/${maxRetries + 1} failed. Retrying in ${delay}ms...`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+            continue;
+          }
+        } else {
+          // 4xx 에러는 재시도하지 않음
+          throw error;
+        }
+      }
+
+      if (attempt === maxRetries) {
+        throw lastError;
+      }
+    }
+  }
+
+  throw lastError!;
+}
+
+/** ===================== Common Utilities ===================== **/
+
+const toAmount = (v: unknown): number => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
+
+/** ===================== Orders Amount Helper ===================== **/
+
+async function sumOrdersAmount(params: {
+  mallId: string;
+  token: string;
+  memberId: string;
+  start: string;
+  end: string;
+  shopNo: number;
+  pageSize?: number;
+  maxPages?: number;
+}): Promise<number> {
+  const { mallId, token, memberId, start, end, shopNo, pageSize = 100, maxPages = 50 } = params;
+
+  let offset = 0;
+  let pages = 0;
+  let total = 0;
+
+  while (pages < maxPages) {
+    const res: AxiosResponse<OrdersListResponse> = await withRetry(() =>
+      axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
+        params: {
+          shop_no: shopNo,
+          start_date: start,
+          end_date: end,
+          member_id: memberId,
+          order_status: "N40,N50",
+          limit: pageSize,
+          offset,
+        },
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 15000,
+        validateStatus: (s: number) => s === 200 || s === 404,
+      }),
+    );
+
+    const orders = res.data?.orders ?? [];
+    if (orders.length === 0) break;
+
+    total += orders.reduce((sum: number, o: OrdersListOrder) => sum + toAmount(o.order_price_amount), 0);
+
+    if (orders.length < pageSize) break;
+    offset += pageSize;
+    pages += 1;
+  }
+  return total;
+}
+
+/** ===================== Handler ===================== **/
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+
+  const userId = url.searchParams.get("user_id");
+  const periodParam = (url.searchParams.get("period") || "3months") as Period; // "3months" | "1year"
+  const shopNoRaw = url.searchParams.get("shop_no") ?? "1";
+  const shopNo = Number.isNaN(Number(shopNoRaw)) ? 1 : Number(shopNoRaw);
+  const guess = url.searchParams.get("guess") !== "0"; // 숫자-only → @k/@n 자동 시도 (기본 true)
+
+  if (!userId) {
+    return NextResponse.json({ error: "user_id parameter is required" }, { status: 400 });
+  }
+  if (periodParam !== "3months" && periodParam !== "1year") {
+    return NextResponse.json({ error: "Invalid period parameter", validValues: ["3months", "1year"] }, { status: 400 });
+  }
+
+  console.log(`[REQUEST START] Processing user_id=${userId}, period=${periodParam}, shop_no=${shopNo}`);
+  const startTime = Date.now();
+
+  // 입력 전처리
+  let raw: string;
+  try {
+    raw = decodeURIComponent(userId).trim();
+  } catch {
+    return NextResponse.json({ error: "Invalid user_id encoding" }, { status: 400 });
+  }
+
+  console.log(`[DEBUG] Raw input: ${raw}`);
+
+  const digits = raw.replace(/\D/g, "");
+  const isPhone = /^0\d{9,10}$/.test(digits); // 10~11자리
+  const isNumericOnly = /^\d+$/.test(raw);
+
+  try {
+    const { access_token } = (await loadParams(["access_token"])) as { access_token: string };
+    const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID;
+    if (!mallId) {
+      return NextResponse.json({ error: "Missing NEXT_PUBLIC_CAFE24_MALL_ID" }, { status: 500 });
+    }
+
+    const authHeaders: Record<string, string> = {
+      Authorization: `Bearer ${access_token}`,
+      "X-Cafe24-Api-Version": "2025-06-01",
     };
 
-    console.log("[SHEETS] 완료:", summary);
+    /** 1) Customers 조회: cellphone 또는 member_id만 허용 **/
 
-    return NextResponse.json({
-      success: true,
-      message: `${results.length}명 검증 완료`,
-      statistics: summary,
-    });
-  } catch (error) {
-    console.error("[SHEETS] 작업 실패:", error);
+    const strategies: Strategy[] = [];
+
+    if (isPhone) {
+      strategies.push({ name: "cellphone", params: { limit: 1, cellphone: digits } });
+    } else if (isNumericOnly) {
+      // 숫자-only → 후보 생성 (raw, raw@k, raw@n)
+      const candidates: string[] = guess ? [raw, `${raw}@k`, `${raw}@n`] : [raw];
+      let matched: string | undefined;
+
+      for (const cand of candidates) {
+        const t: AxiosResponse<CustomersResponse> = await withRetry(() =>
+          axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
+            params: { limit: 1, member_id: cand },
+            headers: authHeaders,
+            timeout: 10000,
+            validateStatus: () => true,
+          }),
+        );
+        if (t.status === 200 && t.data?.customers?.length > 0) {
+          matched = cand;
+          break;
+        }
+      }
+
+      if (matched) {
+        strategies.push({ name: "member_id", params: { limit: 1, member_id: matched } });
+        console.log(`[DEBUG] 숫자-only 매칭 성공: ${raw} -> ${matched}`);
+      } else {
+        console.log(`[ERROR] Unsupported identifier: ${raw} (numeric-only, not phone, not member_id)`);
+        return NextResponse.json(
+          {
+            error: "Unsupported identifier",
+            hint: "member_id(로그인 아이디) 또는 휴대폰 번호(010...)를 전달하세요.",
+            received: raw,
+            examples: ["4346815169@k", "2225150920@n", "yoonhyerin", "01012345678"],
+          },
+          { status: 400 },
+        );
+      }
+    } else {
+      strategies.push({ name: "member_id", params: { limit: 1, member_id: raw } });
+    }
+
+    let customerRes: AxiosResponse<CustomersResponse> | undefined;
+    let memberLoginId: string | undefined;
+    let foundBy: Strategy["name"] | undefined;
+
+    for (const st of strategies) {
+      console.log(`[CUSTOMERS API] ${st.name}로 검색 시도`);
+      try {
+        const r: AxiosResponse<CustomersResponse> = await withRetry(() =>
+          axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
+            params: st.params,
+            headers: authHeaders,
+            timeout: 10000,
+          }),
+        );
+        const list = r.data?.customers ?? [];
+        if (list.length > 0) {
+          customerRes = r;
+          const c = list[0];
+          const loginId = c.member_id || c.user_id;
+          if (!loginId) {
+            console.log(`[CUSTOMERS API] 경고: 로그인 아이디 없음(member_id/user_id)`);
+            continue;
+          }
+          memberLoginId = loginId;
+          foundBy = st.name;
+          console.log(`[CUSTOMERS API] 고객 발견: by=${foundBy}, member_id=${memberLoginId}`);
+          break;
+        } else {
+          console.log(`[CUSTOMERS API] ${st.name} 결과 없음`);
+        }
+      } catch (err: unknown) {
+        const ax = err as AxiosError<unknown>;
+        console.log(`[CUSTOMERS API] ${st.name} 실패`, ax.response?.status, ax.response?.data);
+        // 다음 전략 시도
+      }
+    }
+
+    if (!customerRes || !memberLoginId || !foundBy) {
+      return NextResponse.json(
+        {
+          error: "Customer not found",
+          triedStrategies: strategies.map(s => s.name),
+          hint: isPhone
+            ? "휴대폰 번호(010xxxxxxxx) 형식이 정확한지 확인하세요."
+            : "로그인 아이디(@k/@n/일반ID)가 맞는지 확인하세요.",
+        },
+        { status: 404 },
+      );
+    }
+
+    const customer = customerRes.data.customers[0];
+
+    // 숫자 등급 추출: group.group_no 우선, 없으면 top-level group_no
+    const memberGradeNo =
+      typeof customer.group?.group_no === "number"
+        ? customer.group.group_no
+        : typeof customer.group_no === "number"
+        ? customer.group_no
+        : undefined;
+
+    console.log(`[DEBUG] Customer located by ${foundBy}. member_id=${memberLoginId}, group_no=${memberGradeNo}`);
+
+    /** 2) Orders 조회: KST 기준, 3개월 한도 엄격 준수 **/
+
+    let totalOrders = 0;
+    let totalPurchaseAmount = 0;
+
+    const now = new Date();
+
+    if (periodParam === "3months") {
+      // KST 달력 기준 최근 3개월 창
+      const nowKstDay = now;
+      const threeMonthsAgoKst = addMonthsKST(nowKstDay, -3);
+
+      const { s, e } = clampCafe24WindowKST(threeMonthsAgoKst, nowKstDay);
+      const startStr = fmtKST(s);
+      const endStr = fmtKST(e);
+
+      console.log(`[ORDERS API] 3개월 범위: ${startStr} ~ ${endStr}`);
+
+      // Count
+      const countRes: AxiosResponse<OrdersCountResponse> = await withRetry(() =>
+        axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders/count`, {
+          params: {
+            shop_no: shopNo,
+            start_date: startStr,
+            end_date: endStr,
+            member_id: memberLoginId,
+            order_status: "N40,N50",
+          },
+          headers: { Authorization: `Bearer ${access_token}` },
+          timeout: 10000,
+        }),
+      );
+      totalOrders = countRes.data?.count ?? 0;
+
+      // Amount (선택적) — 필요 없으면 제거 가능
+      if (totalOrders > 0) {
+        console.log(`[ORDERS AMOUNT] 3개월 주문 금액 계산 시작 (총 ${totalOrders}건)`);
+        totalPurchaseAmount = await sumOrdersAmount({
+          mallId,
+          token: access_token,
+          memberId: memberLoginId,
+          start: startStr,
+          end: endStr,
+          shopNo,
+          pageSize: 50,
+          maxPages: 100,
+        });
+        console.log(`[ORDERS AMOUNT] 3개월 주문 금액 계산 완료: ${totalPurchaseAmount}원`);
+      }
+    } else {
+      // 1년 → KST 기준 3개월 윈도우로 분할
+      const endAll = now;
+      const startAll = addMonthsKST(endAll, -12);
+      const windows = splitCafe24WindowsKST(startAll, endAll);
+
+      console.log(`[ORDERS API] 1년 분할: ${windows.length}개 구간`);
+
+      for (const { s, e } of windows) {
+        const sStr = fmtKST(s);
+        const eStr = fmtKST(e);
+
+        const countRes: AxiosResponse<OrdersCountResponse> = await withRetry(() =>
+          axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders/count`, {
+            params: {
+              shop_no: shopNo,
+              start_date: sStr,
+              end_date: eStr,
+              member_id: memberLoginId,
+              order_status: "N40,N50",
+            },
+            headers: { Authorization: `Bearer ${access_token}` },
+            timeout: 10000,
+          }),
+        );
+
+        const chunkCount = countRes.data?.count ?? 0;
+        totalOrders += chunkCount;
+
+        if (chunkCount > 0) {
+          const res: AxiosResponse<OrdersListResponse> = await withRetry(() =>
+            axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
+              params: {
+                shop_no: shopNo,
+                start_date: sStr,
+                end_date: eStr,
+                member_id: memberLoginId,
+                order_status: "N40,N50",
+                limit: 200,
+                offset: 0,
+              },
+              headers: { Authorization: `Bearer ${access_token}` },
+              timeout: 15000,
+              validateStatus: (s2: number) => s2 === 200 || s2 === 404,
+            }),
+          );
+
+          const orders = res.data?.orders ?? [];
+          const chunkAmount = orders.reduce(
+            (sum: number, o: OrdersListOrder) => sum + toAmount(o.order_price_amount),
+            0,
+          );
+          totalPurchaseAmount += chunkAmount;
+        }
+      }
+    }
+
+    const processingTime = Date.now() - startTime;
+    console.log(
+      `[FINAL RESULT] totalOrders=${totalOrders}, totalPurchaseAmount=${totalPurchaseAmount}, processingTime=${processingTime}ms`,
+    );
+
+    /** 3) 응답 — memberGradeNo(숫자) 포함 **/
+    const customerInfo = {
+      userId: customer.user_id,
+      userName: customer.user_name,
+      memberGrade: customer.group?.group_name || "일반회원", // 등급명(문자)
+      memberGradeNo, // 등급번호(숫자) — 시트 AE에서 이 값 사용
+      joinDate: customer.created_date,
+      totalPurchaseAmount,
+      totalOrders,
+      email: customer.email,
+      phone: customer.phone,
+      lastLoginDate: customer.last_login_date,
+      memberId: memberLoginId, // 실제 조회에 사용된 로그인 아이디
+      period: periodParam,
+      shopNo,
+      searchMethod: foundBy, // "cellphone" | "member_id"
+      processingTime,
+    };
+
+    return NextResponse.json(customerInfo);
+  } catch (error: unknown) {
+    const processingTime = Date.now() - startTime;
+    console.error(`[ERROR] Request failed after ${processingTime}ms`, error);
+
+    if (axios.isAxiosError(error)) {
+      const ax = error as AxiosError<unknown>;
+      const status = ax.response?.status;
+      const data = ax.response?.data;
+
+      console.error(`[AXIOS ERROR] Status=${String(status)}`, data);
+
+      if (status === 401) {
+        return NextResponse.json(
+          {
+            error: "Unauthorized - token may be expired",
+            processingTime,
+          },
+          { status: 401 },
+        );
+      }
+      if (status === 422) {
+        return NextResponse.json(
+          {
+            error: "Invalid request parameters",
+            details: data,
+            processingTime,
+          },
+          { status: 422 },
+        );
+      }
+      if (status === 404) {
+        return NextResponse.json(
+          {
+            error: "Not found",
+            details: data,
+            processingTime,
+          },
+          { status: 404 },
+        );
+      }
+      if (status === 429) {
+        return NextResponse.json(
+          {
+            error: "Rate limited by Cafe24 API. Please retry later.",
+            hint: "대량 요청 시 잠시 후 다시 시도해주세요.",
+            processingTime,
+          },
+          { status: 429 },
+        );
+      }
+      if (status && status >= 500) {
+        return NextResponse.json(
+          {
+            error: "Upstream server error from Cafe24",
+            details: data,
+            processingTime,
+          },
+          { status: 502 },
+        );
+      }
+    } else {
+      console.error(`[UNCAUGHT ERROR]`, error);
+    }
+
     return NextResponse.json(
       {
-        error: "작업에 실패했습니다",
-        details: error instanceof Error ? error.message : String(error),
+        error: "Failed to fetch customer information",
+        processingTime,
       },
       { status: 500 },
     );
