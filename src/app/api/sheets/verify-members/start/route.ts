@@ -1,3 +1,4 @@
+// src/app/api/sheets/verify-members/start/route.ts
 import { NextResponse } from "next/server";
 import { google } from "googleapis";
 
@@ -28,7 +29,7 @@ interface InfoSuccess {
   userName?: string;
   memberId: string;
   memberGrade?: string; // 등급명 (예: "VIP 3")
-  memberGradeNo?: number; // 등급번호 (숫자) - 있으면 이 값을 우선 사용
+  memberGradeNo?: number; // 등급번호 (숫자)
   joinDate?: string; // ISO or YYYY-MM-DD
   totalOrders: number; // 최근 3개월 주문 건수
   period?: "3months" | "1year";
@@ -46,10 +47,12 @@ interface InfoError {
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
-const digitsFromText = (s?: string): number | undefined => {
-  if (!s) return undefined;
-  const m = s.match(/\d+/);
-  return m ? Number(m[0]) : undefined;
+const toDateCell = (v?: string): string => {
+  if (!v) return "";
+  // "YYYY-MM-DDTHH:mm:ss" | "YYYY-MM-DD HH:mm:ss" → "YYYY-MM-DD"
+  if (v.includes("T")) return v.split("T")[0]!;
+  if (v.includes(" ")) return v.split(" ")[0]!;
+  return v;
 };
 
 const isInfoError = (v: unknown): v is InfoError => typeof v === "object" && v !== null && "error" in v;
@@ -114,34 +117,36 @@ export async function POST(req: Request) {
     const origin = `${url.protocol}//${url.host}`;
 
     // 3) 각 회원 처리 (순차 + 소폭 대기)
-    const results: {
+    type RowResult = {
       rowIndex: number;
       memberId: string;
       isRegisteredEmoji: "⭕" | "❌";
-      memberGradeNoStr: string; // AE 셀에 쓸 문자열
-      joinDateStr: string;
-      orders3mStr: string;
+      memberGradeNoCell: number | ""; // 숫자 셀 유지
+      joinDateCell: string;
+      orders3mCell: number | ""; // 숫자 셀 유지
       hadError: boolean;
-    }[] = [];
+    };
+
+    const results: RowResult[] = [];
 
     for (const member of members) {
       const cleanPhone = member.phone.replace(/\D/g, "");
       let memberId = "";
       let isRegisteredEmoji: "⭕" | "❌" = "❌";
-      let memberGradeNoStr = "";
-      let joinDateStr = "";
-      let orders3mStr = "";
+      let memberGradeNoCell: number | "" = "";
+      let joinDateCell = "";
+      let orders3mCell: number | "" = "";
       let hadError = false;
 
+      // 휴대폰 10~11자리(0으로 시작)만 조회
       if (!/^0\d{9,10}$/.test(cleanPhone)) {
-        // 전화번호 형식이 아니면 조회 불가로 판단
         results.push({
           rowIndex: member.rowIndex,
           memberId,
           isRegisteredEmoji,
-          memberGradeNoStr,
-          joinDateStr,
-          orders3mStr,
+          memberGradeNoCell,
+          joinDateCell,
+          orders3mCell,
           hadError: true,
         });
         continue;
@@ -151,10 +156,10 @@ export async function POST(req: Request) {
         const infoUrl =
           `${origin}/api/customer/info?` +
           new URLSearchParams({
-            user_id: cleanPhone, // info 라우트가 휴대폰도 지원
+            user_id: cleanPhone,
             period: "3months",
             shop_no: String(shopNoNum),
-            guess: "1", // 숫자-only일 때 @k/@n 후보도 시도(안전)
+            guess: "1",
           }).toString();
 
         const resp = await fetch(infoUrl, { method: "GET" });
@@ -164,26 +169,28 @@ export async function POST(req: Request) {
             // 미가입
             isRegisteredEmoji = "❌";
           } else {
-            // 그 외 오류
             hadError = true;
             console.log(`[INFO API] ${member.name}/${cleanPhone} 실패 status=${resp.status}`);
           }
         } else {
           const payload: InfoSuccess | InfoError = await resp.json();
           if (isInfoError(payload)) {
-            // 에러 페이로드지만 200일 경우(거의 없음) 방어
             hadError = true;
             console.log(`[INFO API] ${member.name}/${cleanPhone} payload error=`, payload.error);
           } else {
             // 성공
-            const gradeNo =
-              typeof payload.memberGradeNo === "number" ? payload.memberGradeNo : digitsFromText(payload.memberGrade); // 이름에서 숫자 추출 백업
-
             memberId = payload.memberId ?? "";
             isRegisteredEmoji = "⭕";
-            memberGradeNoStr = typeof gradeNo === "number" ? String(gradeNo) : "";
-            joinDateStr = payload.joinDate ? payload.joinDate.split("T")[0] ?? payload.joinDate : "";
-            orders3mStr = String(payload.totalOrders ?? 0);
+
+            // 등급번호: 숫자 그 자체!
+            if (typeof payload.memberGradeNo === "number") {
+              memberGradeNoCell = payload.memberGradeNo;
+            } else {
+              memberGradeNoCell = ""; // 못 받으면 빈칸
+            }
+
+            joinDateCell = toDateCell(payload.joinDate);
+            orders3mCell = typeof payload.totalOrders === "number" ? payload.totalOrders : 0;
           }
         }
       } catch (e) {
@@ -195,28 +202,51 @@ export async function POST(req: Request) {
         rowIndex: member.rowIndex,
         memberId,
         isRegisteredEmoji,
-        memberGradeNoStr,
-        joinDateStr,
-        orders3mStr,
+        memberGradeNoCell,
+        joinDateCell,
+        orders3mCell,
         hadError,
       });
 
-      // Cafe24 레이트 리밋 보호 (info 라우트 내부에서도 보호하지만 여기도 살짝 대기)
+      // Cafe24 레이트 리밋 보호 (info 라우트 내부에서도 보호하지만 여기도 대기)
       await sleep(250);
     }
 
-    // 4) 시트에 쓰기 (AC:ID, AD:가입여부 ⭕/❌, AE:등급번호, AF:가입일, AG:최근3개월구매건수)
+    // 4) 시트에 쓰기
+    // - AC: 회원ID
+    // - AD: 가입여부(⭕/❌)
+    // - AE: 등급번호(숫자)
+    // - AF: 가입일(YYYY-MM-DD)
+    // - AG: 최근3개월 구매건수(숫자)
+    // 행 정렬 + 원본 행 번호에 맞춰 빈 줄 채우기
     const sorted = results.sort((a, b) => a.rowIndex - b.rowIndex);
-    const values = sorted.map(r => [r.memberId, r.isRegisteredEmoji, r.memberGradeNoStr, r.joinDateStr, r.orders3mStr]);
+    const maxRowIndex = sorted.length ? sorted[sorted.length - 1].rowIndex : 1;
+    const rowsMatrix: (string | number)[][] = Array.from({ length: Math.max(0, maxRowIndex - 1) }, () => [
+      "",
+      "",
+      "",
+      "",
+      "",
+    ]);
 
-    const endRow = values.length + 1; // 헤더 1행 감안
-    const writeRange = `${targetSheet}!AC2:AG${endRow}`;
+    for (const r of sorted) {
+      const i = r.rowIndex - 2; // 0-based index for AC row
+      if (i < 0 || i >= rowsMatrix.length) continue;
+      rowsMatrix[i] = [
+        r.memberId, // AC
+        r.isRegisteredEmoji, // AD
+        r.memberGradeNoCell, // AE (number | "")
+        r.joinDateCell, // AF
+        r.orders3mCell, // AG (number | "")
+      ];
+    }
 
+    const writeRange = `${targetSheet}!AC2:AG${maxRowIndex}`;
     await sheets.spreadsheets.values.update({
       spreadsheetId,
       range: writeRange,
       valueInputOption: "RAW",
-      requestBody: { values },
+      requestBody: { values: rowsMatrix },
     });
 
     // 5) 요약 통계
@@ -237,7 +267,10 @@ export async function POST(req: Request) {
   } catch (error) {
     console.error("[SHEETS] 작업 실패:", error);
     return NextResponse.json(
-      { error: "작업에 실패했습니다", details: error instanceof Error ? error.message : String(error) },
+      {
+        error: "작업에 실패했습니다",
+        details: error instanceof Error ? error.message : String(error),
+      },
       { status: 500 },
     );
   }
