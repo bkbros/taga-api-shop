@@ -3,6 +3,20 @@ import { google } from "googleapis";
 import { loadParams } from "@/lib/ssm";
 import { jobStore, generateJobId } from "@/lib/job-store";
 
+// Google Auth 타입 정의
+type GoogleCredentials = {
+  type: string;
+  project_id: string;
+  private_key_id: string;
+  private_key: string;
+  client_email: string;
+  client_id: string;
+  auth_uri: string;
+  token_uri: string;
+  auth_provider_x509_cert_url: string;
+  client_x509_cert_url: string;
+};
+
 // 기본 타입들
 interface SheetMember {
   name: string;
@@ -31,18 +45,18 @@ export async function POST(req: Request) {
     }
 
     // Google Sheets 인증 설정
-    let credentials;
+    let credentials: GoogleCredentials;
     if (useEnvCredentials) {
       const googleCredJson = process.env.GOOGLE_CRED_JSON;
       if (!googleCredJson) {
         return NextResponse.json({ error: "환경변수에 GOOGLE_CRED_JSON이 설정되지 않았습니다" }, { status: 500 });
       }
-      credentials = JSON.parse(Buffer.from(googleCredJson, 'base64').toString('utf-8'));
+      credentials = JSON.parse(Buffer.from(googleCredJson, 'base64').toString('utf-8')) as GoogleCredentials;
     } else {
       if (!serviceAccountKey) {
         return NextResponse.json({ error: "serviceAccountKey가 필요합니다" }, { status: 400 });
       }
-      credentials = JSON.parse(serviceAccountKey);
+      credentials = JSON.parse(serviceAccountKey) as GoogleCredentials;
     }
 
     const auth = new google.auth.GoogleAuth({
@@ -106,7 +120,7 @@ async function processMembers(
   members: SheetMember[],
   spreadsheetId: string,
   sheetName: string,
-  credentials: unknown
+  credentials: GoogleCredentials
 ) {
   console.log(`[JOB ${jobId}] 백그라운드 처리 시작: ${members.length}명`);
 
