@@ -130,7 +130,45 @@ export async function POST(req: Request) {
         }
 
         if (customer) {
-          // 가입 회원 (구매건수는 0으로 설정하여 속도 향상)
+          // 가입 회원 - 구매건수 조회 (최근 3개월)
+          let totalOrders = 0;
+          try {
+            const memberId = customer.member_id;
+            if (memberId) {
+              // 최근 3개월 범위 계산
+              const now = new Date();
+              const threeMonthsAgo = new Date();
+              threeMonthsAgo.setMonth(now.getMonth() - 3);
+
+              const startDate = threeMonthsAgo.toISOString().split('T')[0] + ' 00:00:00';
+              const endDate = now.toISOString().split('T')[0] + ' 23:59:59';
+
+              const ordersParams = new URLSearchParams({
+                member_id: memberId,
+                start_date: startDate,
+                end_date: endDate,
+                order_status: 'N40,N50'
+              });
+
+              const ordersResponse = await fetch(`https://${mallId}.cafe24api.com/api/v2/admin/orders/count?${ordersParams}`, {
+                method: 'GET',
+                headers: {
+                  'Authorization': `Bearer ${access_token}`,
+                  'Content-Type': 'application/json',
+                  'X-Cafe24-Api-Version': '2025-06-01'
+                }
+              });
+
+              if (ordersResponse.ok) {
+                const ordersData = await ordersResponse.json();
+                totalOrders = ordersData.count || 0;
+                console.log(`${member.name} 구매건수: ${totalOrders}건`);
+              }
+            }
+          } catch (error) {
+            console.log(`${member.name} 구매건수 조회 실패:`, error);
+          }
+
           verificationResults.push({
             rowIndex: member.rowIndex,
             name: member.name,
@@ -139,7 +177,7 @@ export async function POST(req: Request) {
             memberId: customer.member_id,
             memberGrade: customer.group_no || 1,
             joinDate: customer.created_date,
-            totalOrders: 0
+            totalOrders: totalOrders
           });
         } else {
           // 미가입 회원
@@ -151,8 +189,8 @@ export async function POST(req: Request) {
           });
         }
 
-        // API 호출 간격 (Rate Limit 방지)
-        await new Promise(resolve => setTimeout(resolve, 200));
+        // API 호출 간격 (Rate Limit 방지 - 구매건수 조회 추가로 늘림)
+        await new Promise(resolve => setTimeout(resolve, 300));
 
       } catch (error) {
         console.error(`${member.name} 처리 실패:`, error);
