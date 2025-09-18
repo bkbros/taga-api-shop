@@ -440,6 +440,7 @@
 //   }
 // }
 
+// app/api/customer/info/route.ts
 import { NextResponse } from "next/server";
 import axios, { AxiosError, AxiosResponse } from "axios";
 import { loadParams } from "@/lib/ssm";
@@ -476,6 +477,8 @@ type OrdersListResponse = {
 };
 
 type Strategy = { name: "cellphone" | "member_id"; params: Record<string, string | number> };
+
+type Period = "3months" | "1year";
 
 /** ===================== KST Utilities ===================== **/
 
@@ -535,10 +538,11 @@ function clampCafe24WindowKST(startKstDay: Date, capKstDay: Date): { s: Date; e:
 }
 
 // 긴 범위를 KST 기준 3개월 윈도우로 분할
-function splitCafe24WindowsKST(fromKst: Date, toKst: Date): Array<{ s: Date; e: Date }> {
+// ⚠️ 파라미터 이름을 fromKstDate/toKstDate 로 바꿔 'fromKst(...)' 함수와 섀도잉 방지
+function splitCafe24WindowsKST(fromKstDate: Date, toKstDate: Date): Array<{ s: Date; e: Date }> {
   const out: Array<{ s: Date; e: Date }> = [];
-  let cursor = kstStartOfDay(fromKst);
-  const cap = kstEndOfDay(toKst);
+  let cursor = kstStartOfDay(fromKstDate);
+  const cap = kstEndOfDay(toKstDate);
 
   while (cursor.getTime() <= cap.getTime()) {
     const { s, e } = clampCafe24WindowKST(cursor, cap);
@@ -558,13 +562,62 @@ const toAmount = (v: unknown): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
+/** ===================== Orders Amount Helper ===================== **/
+
+async function sumOrdersAmount(params: {
+  mallId: string;
+  token: string;
+  memberId: string;
+  start: string;
+  end: string;
+  shopNo: number;
+  pageSize?: number;
+  maxPages?: number;
+}): Promise<number> {
+  const { mallId, token, memberId, start, end, shopNo, pageSize = 100, maxPages = 50 } = params;
+
+  let offset = 0;
+  let pages = 0;
+  let total = 0;
+
+  while (pages < maxPages) {
+    const res: AxiosResponse<OrdersListResponse> = await axios.get(
+      `https://${mallId}.cafe24api.com/api/v2/admin/orders`,
+      {
+        params: {
+          shop_no: shopNo,
+          start_date: start,
+          end_date: end,
+          member_id: memberId,
+          order_status: "N40,N50",
+          limit: pageSize,
+          offset,
+        },
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 8000,
+        validateStatus: (s: number) => s === 200 || s === 404,
+      },
+    );
+
+    const orders = res.data?.orders ?? [];
+    if (orders.length === 0) break;
+
+    total += orders.reduce((sum: number, o: OrdersListOrder) => sum + toAmount(o.order_price_amount), 0);
+
+    if (orders.length < pageSize) break;
+    offset += pageSize;
+    pages += 1;
+  }
+  return total;
+}
+
 /** ===================== Handler ===================== **/
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
 
   const userId = url.searchParams.get("user_id");
-  const periodParam = url.searchParams.get("period") || "3months"; // "3months" | "1year"
+  const periodParam = (url.searchParams.get("period") || "3months") as Period; // "3months" | "1year"
   const shopNoRaw = url.searchParams.get("shop_no") ?? "1";
   const shopNo = Number.isNaN(Number(shopNoRaw)) ? 1 : Number(shopNoRaw);
   const guess = url.searchParams.get("guess") !== "0"; // 숫자-only → @k/@n 자동 시도 (기본 true)
@@ -572,7 +625,7 @@ export async function GET(req: Request) {
   if (!userId) {
     return NextResponse.json({ error: "user_id parameter is required" }, { status: 400 });
   }
-  if (!["3months", "1year"].includes(periodParam)) {
+  if (periodParam !== "3months" && periodParam !== "1year") {
     return NextResponse.json({ error: "Invalid period parameter", validValues: ["3months", "1year"] }, { status: 400 });
   }
 
@@ -711,7 +764,7 @@ export async function GET(req: Request) {
 
     if (periodParam === "3months") {
       // KST 달력 기준 최근 3개월 창
-      const nowKstDay = now; // 기준 Date는 동일, 계산/포맷을 KST로 수행
+      const nowKstDay = now;
       const threeMonthsAgoKst = addMonthsKST(nowKstDay, -3);
 
       const { s, e } = clampCafe24WindowKST(threeMonthsAgoKst, nowKstDay);
@@ -811,7 +864,7 @@ export async function GET(req: Request) {
 
     console.log(`[FINAL RESULT] totalOrders=${totalOrders}, totalPurchaseAmount=${totalPurchaseAmount}`);
 
-    /** 3) 응답 (foundBy 사용 → ESLint 미사용 변수 경고 제거) **/
+    /** 3) 응답 (searchMethod 포함 → ESLint 미사용 변수 경고 제거) **/
     const customerInfo = {
       userId: customer.user_id,
       userName: customer.user_name,
@@ -825,7 +878,7 @@ export async function GET(req: Request) {
       memberId: memberLoginId, // 실제 조회에 사용된 로그인 아이디
       period: periodParam,
       shopNo,
-      searchMethod: foundBy, // ← here (cellphone | member_id)
+      searchMethod: foundBy, // "cellphone" | "member_id"
     };
 
     return NextResponse.json(customerInfo);
@@ -858,53 +911,4 @@ export async function GET(req: Request) {
 
     return NextResponse.json({ error: "Failed to fetch customer information" }, { status: 500 });
   }
-}
-
-/** ===================== Orders Amount Helper ===================== **/
-
-async function sumOrdersAmount(params: {
-  mallId: string;
-  token: string;
-  memberId: string;
-  start: string;
-  end: string;
-  shopNo: number;
-  pageSize?: number;
-  maxPages?: number;
-}): Promise<number> {
-  const { mallId, token, memberId, start, end, shopNo, pageSize = 100, maxPages = 50 } = params;
-
-  let offset = 0;
-  let pages = 0;
-  let total = 0;
-
-  while (pages < maxPages) {
-    const res: AxiosResponse<OrdersListResponse> = await axios.get(
-      `https://${mallId}.cafe24api.com/api/v2/admin/orders`,
-      {
-        params: {
-          shop_no: shopNo,
-          start_date: start,
-          end_date: end,
-          member_id: memberId,
-          order_status: "N40,N50",
-          limit: pageSize,
-          offset,
-        },
-        headers: { Authorization: `Bearer ${token}` },
-        timeout: 8000,
-        validateStatus: (s: number) => s === 200 || s === 404,
-      },
-    );
-
-    const orders = res.data?.orders ?? [];
-    if (orders.length === 0) break;
-
-    total += orders.reduce((sum: number, o: OrdersListOrder) => sum + (Number(o.order_price_amount) || 0), 0);
-
-    if (orders.length < pageSize) break;
-    offset += pageSize;
-    pages += 1;
-  }
-  return total;
 }
