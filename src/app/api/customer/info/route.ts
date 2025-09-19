@@ -401,34 +401,44 @@
 //   }
 // }
 
+// src/app/api/customer/info/route.ts
 import { NextResponse } from "next/server";
 import axios, { AxiosError, AxiosResponse } from "axios";
 import { loadParams } from "@/lib/ssm";
 
 /** ===================== Types ===================== **/
+
 type Customer = {
   user_id: string;
   user_name?: string;
-  member_id: string;
+  member_id: string; // 로그인 아이디(주문 조회에 사용)
   member_no?: string | number;
   created_date?: string;
   email?: string;
   phone?: string;
   last_login_date?: string;
   group?: { group_name?: string };
-  group_no?: number; // ← 등급 번호가 오는 몰도 있음
+  group_no?: number; // ← 등급 번호(숫자) 받기 위함
 };
 
 type CustomersResponse = { customers: Customer[] };
+
 type OrdersCountResponse = { count: number };
-type Strategy = { kind: "member_id"; value: string } | { kind: "cellphone" | "phone"; value: string };
+
+type OrdersListOrder = {
+  order_id?: string;
+  order_price_amount?: string;
+};
+type OrdersListResponse = { orders: OrdersListOrder[] };
 
 type Period = "3months" | "1year";
 
-/** ===================== KST utils ===================== **/
+/** ===================== KST Utilities ===================== **/
+
 const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
+// KST 달력 기준 문자열: 'YYYY-MM-DD HH:mm:ss'
 function fmtKST(d: Date): string {
   const k = new Date(d.getTime() + KST_OFFSET_MS);
   const y = k.getUTCFullYear();
@@ -460,6 +470,7 @@ function addMonthsKST(base: Date, months: number): Date {
   k.setUTCMonth(k.getUTCMonth() + months);
   return new Date(k.getTime() - KST_OFFSET_MS);
 }
+// Cafe24 한 호출 범위: start(00:00:00 KST) ~ min(start+3개월-1초, capEndOfDay(KST))
 function clampCafe24WindowKST(startKstDay: Date, capKstDay: Date): { s: Date; e: Date } {
   const s = kstStartOfDay(startKstDay);
   const maxEnd = addMonthsKST(s, +3);
@@ -468,313 +479,423 @@ function clampCafe24WindowKST(startKstDay: Date, capKstDay: Date): { s: Date; e:
   const e = new Date(Math.min(maxEnd.getTime(), capEnd.getTime()));
   return { s, e };
 }
-
-/** ===================== Helpers ===================== **/
-function sanitizeId(input: string): string {
-  // 제로폭/제어문자 제거 + 스페이스 정리
-  return input
-    .replace(/[\u200B-\u200D\uFEFF]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-function digitsFromText(s?: string): number | undefined {
-  if (!s) return undefined;
-  const m = s.match(/\d+/);
-  return m ? Number(m[0]) : undefined;
+function splitCafe24WindowsKST(fromKstDate: Date, toKstDate: Date): Array<{ s: Date; e: Date }> {
+  const out: Array<{ s: Date; e: Date }> = [];
+  let cursor = kstStartOfDay(fromKstDate);
+  const cap = kstEndOfDay(toKstDate);
+  while (cursor.getTime() <= cap.getTime()) {
+    const { s, e } = clampCafe24WindowKST(cursor, cap);
+    out.push({ s, e });
+    const { y, m, d } = getKstYmd(e);
+    cursor = fromKst(y, m, d + 1, 0, 0, 0);
+  }
+  return out;
 }
 
-function looksLikePhone(input: string): boolean {
-  const d = input.replace(/\D/g, "");
-  return /^0\d{9,10}$/.test(d) || /^82\d{9,10}$/.test(d) || /^\+82\d{9,10}$/.test(d);
-}
-function toDomestic010(input: string): string | null {
-  const d = input.replace(/\D/g, "");
-  if (!d) return null;
-  if (d.startsWith("82")) {
-    const rest = d.slice(2);
+/** ===================== Phone normalization ===================== **/
+
+// 입력을 오직 "010XXXXXXXX" (10~11자리) 숫자형으로 변환. 실패 시 null
+function normalizeKoreanCellphone(input: string): string | null {
+  const digits = input.replace(/\D/g, "");
+  if (!digits) return null;
+
+  // +82, 82 → 010 형태로 변환
+  if (digits.startsWith("82")) {
+    const rest = digits.slice(2);
     if (rest.startsWith("10")) return `0${rest}`;
     if (rest.length >= 2 && rest[0] !== "0") return `0${rest}`;
   }
-  if (d.startsWith("10")) return `0${d}`;
-  if (/^0\d{9,10}$/.test(d)) return d;
+  if (digits.startsWith("10")) return `0${digits}`;
+
+  // 이미 0으로 시작하면 그대로
+  if (/^0\d{9,10}$/.test(digits)) return digits;
+
   return null;
 }
-function hyphenateMobile(domestic: string): string {
-  // 010 기반 11자리 → 3-4-4, 구번호대(011 등) 10자리 → 3-3-4
-  const d = domestic.replace(/\D/g, "");
-  if (d.length === 11) return `${d.slice(0, 3)}-${d.slice(3, 7)}-${d.slice(7)}`;
-  if (d.length === 10) return `${d.slice(0, 3)}-${d.slice(3, 6)}-${d.slice(6)}`;
-  return domestic;
-}
-function phoneVariantStrings(input: string): string[] {
-  // 숫자/하이픈/국제형(+82/82) 모든 케이스 생성
-  const set = new Set<string>();
-  const domestic = toDomestic010(input);
-  if (domestic) {
-    const hyph = hyphenateMobile(domestic);
-    set.add(domestic);
-    set.add(hyph);
-    // 국제형 숫자
-    if (domestic.startsWith("0")) {
-      const tail = domestic.slice(1);
-      set.add(`82${tail}`);
-      set.add(`+82${tail}`);
-      set.add(`82-${domestic.slice(1, 3)}-${domestic.slice(3, 7)}-${domestic.slice(7)}`);
-      set.add(`+82-${domestic.slice(1, 3)}-${domestic.slice(3, 7)}-${domestic.slice(7)}`);
-    }
-  } else {
-    const d = input.replace(/\D/g, "");
-    if (d) set.add(d);
-  }
-  return [...set];
-}
 
-/** ===================== RateLimit & Retry ===================== **/
+/** ===================== Rate limit + Retry ===================== **/
+
 class RateLimiter {
-  private q: Array<() => Promise<unknown>> = [];
+  private queue: Array<() => Promise<unknown>> = [];
   private running = 0;
-  private last = 0;
+  private lastRequestTime = 0;
   constructor(private maxConcurrent = 3, private minInterval = 200) {}
-  execute<T>(fn: () => Promise<T>): Promise<T> {
-    return new Promise((resolve, reject) => {
-      this.q.push(async () => {
+  async execute<T>(fn: () => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      this.queue.push(async () => {
         try {
           const now = Date.now();
-          const delta = now - this.last;
-          if (delta < this.minInterval) {
-            await new Promise(r => setTimeout(r, this.minInterval - delta));
+          const gap = now - this.lastRequestTime;
+          if (gap < this.minInterval) {
+            await new Promise(r => setTimeout(r, this.minInterval - gap));
           }
-          this.last = Date.now();
-          const r = await fn();
-          resolve(r);
+          this.lastRequestTime = Date.now();
+          const res = await fn();
+          resolve(res);
         } catch (e) {
           reject(e);
         } finally {
           this.running--;
-          this.pump();
+          this.tick();
         }
       });
-      this.pump();
+      this.tick();
     });
   }
-  private pump() {
-    if (this.running >= this.maxConcurrent || this.q.length === 0) return;
-    const t = this.q.shift();
-    if (t) {
+  private tick() {
+    if (this.running >= this.maxConcurrent || this.queue.length === 0) return;
+    const task = this.queue.shift();
+    if (task) {
       this.running++;
-      t();
+      task();
     }
   }
 }
-const limiter = new RateLimiter(3, 200);
+const rateLimiter = new RateLimiter(3, 200);
 
 async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, baseDelay = 800): Promise<T> {
   let last: unknown;
-  for (let i = 0; i <= maxRetries; i++) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      return await limiter.execute(fn);
-    } catch (e) {
-      last = e;
-      const ax = e as AxiosError;
-      const status = ax.response?.status;
-      if (status === 429 || (status !== undefined && status >= 500)) {
-        if (i < maxRetries) {
-          await new Promise(r => setTimeout(r, baseDelay * Math.pow(2, i)));
-          continue;
+      return await rateLimiter.execute(fn);
+    } catch (err) {
+      last = err;
+      if (axios.isAxiosError(err)) {
+        const status = err.response?.status;
+        if (status === 429 || (status && status >= 500)) {
+          if (attempt < maxRetries) {
+            const delay = baseDelay * Math.pow(2, attempt);
+            await new Promise(r => setTimeout(r, delay));
+            continue;
+          }
         }
       }
-      break;
+      if (attempt === maxRetries) throw last;
     }
   }
-  throw last instanceof Error ? last : new Error("request failed");
+  // unreachable
+  throw last as Error;
+}
+
+/** ===================== Helpers ===================== **/
+
+const toAmount = (v: unknown): number => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
+
+async function sumOrdersAmount(params: {
+  mallId: string;
+  token: string;
+  memberId: string;
+  start: string;
+  end: string;
+  shopNo: number;
+  pageSize?: number;
+  maxPages?: number;
+}): Promise<number> {
+  const { mallId, token, memberId, start, end, shopNo, pageSize = 100, maxPages = 50 } = params;
+  let offset = 0;
+  let pages = 0;
+  let total = 0;
+
+  while (pages < maxPages) {
+    const res: AxiosResponse<OrdersListResponse> = await withRetry(() =>
+      axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
+        params: {
+          shop_no: shopNo,
+          start_date: start,
+          end_date: end,
+          member_id: memberId,
+          order_status: "N40,N50",
+          limit: pageSize,
+          offset,
+        },
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 15000,
+        validateStatus: (s: number) => s === 200 || s === 404,
+      }),
+    );
+
+    const orders = res.data?.orders ?? [];
+    if (orders.length === 0) break;
+
+    total += orders.reduce((sum: number, o: OrdersListOrder) => sum + toAmount(o.order_price_amount), 0);
+
+    if (orders.length < pageSize) break;
+    offset += pageSize;
+    pages += 1;
+  }
+  return total;
+}
+
+/** ===================== Core: Build strategies (ID → cellphone) ===================== **/
+
+function buildIdCandidates(raw: string, guessNumericIds: boolean): string[] {
+  const cands: string[] = [];
+  const looksLikeId = raw.includes("@") || /[A-Za-z]/.test(raw);
+  const isNumericOnly = /^\d+$/.test(raw);
+
+  if (looksLikeId) {
+    cands.push(raw);
+  } else if (isNumericOnly && guessNumericIds) {
+    // 숫자-only도 ID로 먼저 시도 (원하면 순서 조정 가능)
+    cands.push(`${raw}@k`, `${raw}@n`, raw);
+  } else if (!isNumericOnly) {
+    cands.push(raw);
+  }
+  return Array.from(new Set(cands));
+}
+
+function buildCellphoneCandidates(raw: string): string[] {
+  const norm = normalizeKoreanCellphone(raw);
+  return norm ? [norm] : [];
 }
 
 /** ===================== Handler ===================== **/
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const userIdParam = url.searchParams.get("user_id");
+  const userId = url.searchParams.get("user_id");
   const periodParam = (url.searchParams.get("period") || "3months") as Period;
   const shopNoRaw = url.searchParams.get("shop_no") ?? "1";
   const shopNo = Number.isNaN(Number(shopNoRaw)) ? 1 : Number(shopNoRaw);
-  const guess = url.searchParams.get("guess") !== "0"; // 숫자-only 입력 → @k/@n 후보 시도
+  const guess = url.searchParams.get("guess") !== "0"; // 숫자-only일 때 @k/@n도 후보로 시도 (기본 on)
 
-  if (!userIdParam) return NextResponse.json({ error: "user_id parameter is required" }, { status: 400 });
+  if (!userId) {
+    return NextResponse.json({ error: "user_id parameter is required" }, { status: 400 });
+  }
   if (periodParam !== "3months" && periodParam !== "1year") {
     return NextResponse.json({ error: "Invalid period parameter", validValues: ["3months", "1year"] }, { status: 400 });
   }
 
-  const started = Date.now();
+  const startTime = Date.now();
+
+  // 입력 정리
   let raw: string;
   try {
-    raw = sanitizeId(decodeURIComponent(userIdParam));
+    raw = decodeURIComponent(userId).trim();
   } catch {
     return NextResponse.json({ error: "Invalid user_id encoding" }, { status: 400 });
   }
 
-  console.log(`[DEBUG] Raw input(sanitized): ${JSON.stringify(raw)}`);
-
   try {
     const { access_token } = (await loadParams(["access_token"])) as { access_token: string };
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID;
-    if (!mallId) return NextResponse.json({ error: "Missing NEXT_PUBLIC_CAFE24_MALL_ID" }, { status: 500 });
-
-    const headers = { Authorization: `Bearer ${access_token}`, "X-Cafe24-Api-Version": "2025-06-01" };
-
-    /** 1) 전략 생성: member_id 우선, 그다음 phone/cellphone 모든 변형 **/
-    const strategies: Strategy[] = [];
-    const numericOnly = /^\d+$/.test(raw);
-    const phoneLike = looksLikePhone(raw);
-
-    if (!phoneLike) {
-      if (numericOnly) {
-        const cands = guess ? [raw, `${raw}@k`, `${raw}@n`] : [raw];
-        cands.forEach(v => strategies.push({ kind: "member_id", value: v }));
-      } else {
-        strategies.push({ kind: "member_id", value: raw });
-      }
+    if (!mallId) {
+      return NextResponse.json({ error: "Missing NEXT_PUBLIC_CAFE24_MALL_ID" }, { status: 500 });
     }
 
-    // 전화 변형들 추가 (둘 다 시도: cellphone / phone)
-    const pvars = phoneVariantStrings(raw);
-    for (const v of pvars) {
-      strategies.push({ kind: "cellphone", value: v });
-      strategies.push({ kind: "phone", value: v });
-    }
+    const customersHeaders: Record<string, string> = {
+      Authorization: `Bearer ${access_token}`,
+      "X-Cafe24-Api-Version": "2025-06-01",
+    };
 
-    /** 2) Customers 조회 (각 전략별 shop_no 포함 → 실패 시 shop_no 없이 재시도) **/
-    let foundCustomer: Customer | undefined;
+    /** 1) Customers 조회: "항상 ID 먼저" → 실패 시 cellphone **/
+    const idCands = buildIdCandidates(raw, guess);
+    const phoneCands = buildCellphoneCandidates(raw);
+
+    type Strategy = { kind: "member_id"; value: string } | { kind: "cellphone"; value: string };
+
+    const strategies: Strategy[] = [
+      ...idCands.map(v => ({ kind: "member_id", value: v } as Strategy)),
+      ...phoneCands.map(v => ({ kind: "cellphone", value: v } as Strategy)),
+    ];
+
+    let customerRes: AxiosResponse<CustomersResponse> | undefined;
     let memberLoginId: string | undefined;
-    let searchMethod: "member_id" | "cellphone" | "phone" | undefined;
+    let searchMethod: "member_id" | "cellphone" | undefined;
 
+    // 각 전략 수행 (Customers API에는 shop_no 불필요)
     for (const st of strategies) {
-      const label = `${st.kind}=${st.value}`;
-      // ① with shop_no
       try {
-        const r1: AxiosResponse<CustomersResponse> = await withRetry(() =>
-          axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
-            params: { limit: 1, shop_no: shopNo, [st.kind]: st.value },
-            headers,
-            timeout: 10000,
-          }),
-        );
-        if (r1.data?.customers?.length) {
-          const c = r1.data.customers[0];
-          const loginId = c.member_id || c.user_id;
-          if (loginId) {
-            foundCustomer = c;
-            memberLoginId = loginId;
-            searchMethod = st.kind;
-            console.log(`[CUSTOMERS API] hit (with shop_no): ${label} -> ${loginId}`);
-            break;
-          }
-        } else {
-          console.log(`[CUSTOMERS API] no hit (with shop_no): ${label} -> retry without shop_no`);
-        }
-      } catch (e) {
-        const ax = e as AxiosError;
-        console.log(`[CUSTOMERS API] fail (with shop_no): ${label}`, ax.response?.status, ax.response?.data);
-      }
+        const params = st.kind === "member_id" ? { limit: 1, member_id: st.value } : { limit: 1, cellphone: st.value };
 
-      // ② without shop_no
-      try {
-        const r2: AxiosResponse<CustomersResponse> = await withRetry(() =>
+        const r: AxiosResponse<CustomersResponse> = await withRetry(() =>
           axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
-            params: { limit: 1, [st.kind]: st.value },
-            headers,
+            params,
+            headers: customersHeaders,
             timeout: 10000,
           }),
         );
-        if (r2.data?.customers?.length) {
-          const c = r2.data.customers[0];
+
+        const list = r.data?.customers ?? [];
+        if (list.length > 0) {
+          const c = list[0];
           const loginId = c.member_id || c.user_id;
           if (loginId) {
-            foundCustomer = c;
+            customerRes = r;
             memberLoginId = loginId;
             searchMethod = st.kind;
-            console.log(`[CUSTOMERS API] hit (no shop_no): ${label} -> ${loginId}`);
             break;
           }
-        } else {
-          console.log(`[CUSTOMERS API] no hit (no shop_no): ${label}`);
         }
       } catch (e) {
-        const ax = e as AxiosError;
-        console.log(`[CUSTOMERS API] fail (no shop_no): ${label}`, ax.response?.status, ax.response?.data);
+        // 다음 전략 계속
+        const ax = e as AxiosError<unknown>;
+        // 422 등은 그냥 다음 후보 진행
+        if (ax.response?.status && ax.response.status >= 500) {
+          // 서버 오류면 중단하고 상위로
+          throw e;
+        }
       }
     }
 
-    if (!foundCustomer || !memberLoginId || !searchMethod) {
+    if (!customerRes || !memberLoginId) {
+      const processingTime = Date.now() - startTime;
       return NextResponse.json(
         {
           error: "Customer not found",
-          tried: strategies
-            .slice(0, 12)
-            .map(s => `${s.kind}:${s.value}`)
-            .concat(strategies.length > 12 ? ["..."] : []),
-          hint: "ID(@k/@n/일반ID) 정확도와 휴대전화 저장 형식을 확인하세요. (하이픈/국제형/집전화(phone) 필드 가능성 포함)",
+          tried: {
+            id: idCands,
+            cellphone: phoneCands,
+          },
+          processingTime,
         },
         { status: 404 },
       );
     }
 
-    /** 3) 최근 3개월 주문 건수 (KST) **/
+    const customer = customerRes.data.customers[0];
+
+    /** 2) Orders 조회 (KST, 3개월 제한 준수) **/
+    let totalOrders = 0;
+    let totalPurchaseAmount = 0;
+
     const now = new Date();
-    const { s, e } = clampCafe24WindowKST(addMonthsKST(now, -3), now);
-    const startStr = fmtKST(s);
-    const endStr = fmtKST(e);
 
-    const cnt: AxiosResponse<OrdersCountResponse> = await withRetry(() =>
-      axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders/count`, {
-        params: {
-          shop_no: shopNo,
-          start_date: startStr,
-          end_date: endStr,
-          member_id: memberLoginId,
-          order_status: "N40,N50",
-        },
-        headers, // 버전 헤더도 같이
-        timeout: 10000,
-      }),
-    );
-    const totalOrders = cnt.data?.count ?? 0;
+    if (periodParam === "3months") {
+      const nowKstDay = now;
+      const threeMonthsAgoKst = addMonthsKST(nowKstDay, -3);
+      const { s, e } = clampCafe24WindowKST(threeMonthsAgoKst, nowKstDay);
+      const startStr = fmtKST(s);
+      const endStr = fmtKST(e);
 
-    // 등급번호
-    const memberGradeNo =
-      typeof foundCustomer.group_no === "number"
-        ? foundCustomer.group_no
-        : digitsFromText(foundCustomer.group?.group_name);
+      const countRes: AxiosResponse<OrdersCountResponse> = await withRetry(() =>
+        axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders/count`, {
+          params: {
+            shop_no: shopNo,
+            start_date: startStr,
+            end_date: endStr,
+            member_id: memberLoginId,
+            order_status: "N40,N50",
+          },
+          headers: { Authorization: `Bearer ${access_token}` },
+          timeout: 10000,
+        }),
+      );
+      totalOrders = countRes.data?.count ?? 0;
 
-    const processingTime = Date.now() - started;
+      if (totalOrders > 0) {
+        totalPurchaseAmount = await sumOrdersAmount({
+          mallId,
+          token: access_token,
+          memberId: memberLoginId,
+          start: startStr,
+          end: endStr,
+          shopNo,
+          pageSize: 50,
+          maxPages: 100,
+        });
+      }
+    } else {
+      const endAll = now;
+      const startAll = addMonthsKST(endAll, -12);
+      const windows = splitCafe24WindowsKST(startAll, endAll);
+      for (const { s, e } of windows) {
+        const sStr = fmtKST(s);
+        const eStr = fmtKST(e);
 
+        const countRes: AxiosResponse<OrdersCountResponse> = await withRetry(() =>
+          axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders/count`, {
+            params: {
+              shop_no: shopNo,
+              start_date: sStr,
+              end_date: eStr,
+              member_id: memberLoginId,
+              order_status: "N40,N50",
+            },
+            headers: { Authorization: `Bearer ${access_token}` },
+            timeout: 10000,
+          }),
+        );
+        const chunkCount = countRes.data?.count ?? 0;
+        totalOrders += chunkCount;
+
+        if (chunkCount > 0) {
+          const res: AxiosResponse<OrdersListResponse> = await withRetry(() =>
+            axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
+              params: {
+                shop_no: shopNo,
+                start_date: sStr,
+                end_date: eStr,
+                member_id: memberLoginId,
+                order_status: "N40,N50",
+                limit: 200,
+                offset: 0,
+              },
+              headers: { Authorization: `Bearer ${access_token}` },
+              timeout: 15000,
+              validateStatus: (s2: number) => s2 === 200 || s2 === 404,
+            }),
+          );
+          const orders = res.data?.orders ?? [];
+          totalPurchaseAmount += orders.reduce((sum, o) => sum + toAmount(o.order_price_amount), 0);
+        }
+      }
+    }
+
+    const processingTime = Date.now() - startTime;
+
+    // 응답 (등급번호 포함)
     return NextResponse.json({
-      userId: foundCustomer.user_id,
-      userName: foundCustomer.user_name,
-      memberId: memberLoginId,
-      memberGrade: foundCustomer.group?.group_name,
-      memberGradeNo,
-      joinDate: foundCustomer.created_date,
+      userId: customer.user_id,
+      userName: customer.user_name,
+      memberId: memberLoginId, // 실제 조회에 사용된 로그인 아이디
+      memberGrade: customer.group?.group_name ?? "", // 등급명
+      memberGradeNo: typeof customer.group_no === "number" ? customer.group_no : undefined, // 등급번호(숫자)
+      joinDate: customer.created_date,
       totalOrders,
-      email: foundCustomer.email,
-      phone: foundCustomer.phone,
-      lastLoginDate: foundCustomer.last_login_date,
-      period: "3months",
+      totalPurchaseAmount,
+      email: customer.email,
+      phone: customer.phone,
+      lastLoginDate: customer.last_login_date,
+      period: periodParam,
       shopNo,
       searchMethod,
       processingTime,
     });
   } catch (error) {
-    const ax = error as AxiosError;
-    const status = ax.response?.status;
-    if (status === 401) return NextResponse.json({ error: "Unauthorized - token may be expired" }, { status: 401 });
-    if (status === 422)
-      return NextResponse.json({ error: "Invalid request parameters", details: ax.response?.data }, { status: 422 });
-    if (status === 429)
-      return NextResponse.json({ error: "Rate limited by Cafe24 API. Please retry later." }, { status: 429 });
-    if (status && status >= 500)
-      return NextResponse.json(
-        { error: "Upstream server error from Cafe24", details: ax.response?.data },
-        { status: 502 },
-      );
-    return NextResponse.json({ error: "Failed to fetch customer information" }, { status: 500 });
+    const processingTime = Date.now() - startTime;
+    if (axios.isAxiosError(error)) {
+      const ax = error as AxiosError<unknown>;
+      const status = ax.response?.status;
+      const data = ax.response?.data;
+      if (status === 401) {
+        return NextResponse.json({ error: "Unauthorized - token may be expired", processingTime }, { status: 401 });
+      }
+      if (status === 422) {
+        return NextResponse.json(
+          { error: "Invalid request parameters", details: data, processingTime },
+          { status: 422 },
+        );
+      }
+      if (status === 404) {
+        return NextResponse.json({ error: "Not found", details: data, processingTime }, { status: 404 });
+      }
+      if (status === 429) {
+        return NextResponse.json(
+          { error: "Rate limited by Cafe24 API. Please retry later.", processingTime },
+          { status: 429 },
+        );
+      }
+      if (status && status >= 500) {
+        return NextResponse.json(
+          { error: "Upstream server error from Cafe24", details: data, processingTime },
+          { status: 502 },
+        );
+      }
+    }
+    return NextResponse.json({ error: "Failed to fetch customer information", processingTime }, { status: 500 });
   }
 }
