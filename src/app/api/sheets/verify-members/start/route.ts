@@ -408,14 +408,19 @@ type InfoSuccess = {
 };
 type InfoError = { error: string; details?: unknown };
 
-type RowInput = { rowIndex: number; name: string; phone: string; existingId: string };
+type RowInput = {
+  rowIndex: number;
+  name: string;
+  phone: string;
+  existingId: string;
+};
 type RowOutput = {
   rowIndex: number;
   memberId: string;
-  isRegistered: "⭕" | "❌" | "";
-  gradeNo: number | "";
-  joinDate: string;
-  orders3m: number | "";
+  isRegisteredEmoji: "⭕" | "❌";
+  gradeNoCell: number | "";
+  joinDateCell: string;
+  orders3mCell: number | "";
   hadError: boolean;
 };
 
@@ -433,18 +438,22 @@ function normalizeKoreanCellphone(input: string): string | null {
   return null;
 }
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
-const toDateCell = (v?: string) => (!v ? "" : v.split(/[T ]/)[0] ?? v);
+const toDateCell = (v?: string): string => {
+  if (!v) return "";
+  if (v.includes("T")) return v.split("T")[0]!;
+  if (v.includes(" ")) return v.split(" ")[0]!;
+  return v;
+};
 const isInfoError = (v: unknown): v is InfoError => typeof v === "object" && v !== null && "error" in v;
-const firstNumberIn = (s?: string) => (s ? Number((s.match(/\d+/) ?? [])[0]) : undefined);
 
-// 간단 풀
-async function runPool<T>(tasks: Array<() => Promise<T>>, concurrency: number) {
+async function runPool<T>(tasks: Array<() => Promise<T>>, concurrency: number): Promise<T[]> {
   const results: T[] = [];
   let i = 0;
   async function worker() {
     while (i < tasks.length) {
-      const idx = i++;
-      results[idx] = await tasks[idx]();
+      const my = i++;
+      const out = await tasks[my]();
+      results[my] = out;
     }
   }
   const n = Math.max(1, Math.min(concurrency, tasks.length));
@@ -466,29 +475,41 @@ export async function POST(req: Request) {
       concurrency: concurrencyRaw,
     } = await req.json();
 
-    if (!spreadsheetId) return NextResponse.json({ error: "spreadsheetId가 필요합니다" }, { status: 400 });
+    if (!spreadsheetId) {
+      return NextResponse.json({ error: "spreadsheetId가 필요합니다" }, { status: 400 });
+    }
 
-    const targetSheet = (sheetName || "Sheet1").trim();
+    const targetSheet = (sheetName || "").trim() || "Sheet1";
+    const shopNoNum = Number.isInteger(Number(shopNo)) ? Number(shopNo) : 1;
     const startRow = Number.isInteger(Number(startRowRaw)) ? Number(startRowRaw) : 2;
     const limit = Math.max(1, Math.min(Number(limitRaw ?? 100), 200));
     const concurrency = Math.max(1, Math.min(Number(concurrencyRaw ?? 2), 5));
 
-    // Google auth
+    // Google 인증
     let credentials: GoogleCredentials;
     if (useEnvCredentials) {
-      const b64 = process.env.GOOGLE_CRED_JSON;
-      if (!b64) return NextResponse.json({ error: "환경변수 GOOGLE_CRED_JSON 이 없습니다" }, { status: 500 });
-      credentials = JSON.parse(Buffer.from(b64, "base64").toString("utf-8"));
+      const googleCredJson = process.env.GOOGLE_CRED_JSON;
+      if (!googleCredJson) {
+        return NextResponse.json({ error: "환경변수 GOOGLE_CRED_JSON 이 설정되지 않았습니다" }, { status: 500 });
+      }
+      credentials = JSON.parse(Buffer.from(googleCredJson, "base64").toString("utf-8")) as GoogleCredentials;
     } else {
-      if (!serviceAccountKey) return NextResponse.json({ error: "serviceAccountKey가 필요합니다" }, { status: 400 });
-      credentials = JSON.parse(serviceAccountKey);
+      if (!serviceAccountKey) {
+        return NextResponse.json({ error: "serviceAccountKey가 필요합니다" }, { status: 400 });
+      }
+      credentials = JSON.parse(serviceAccountKey) as GoogleCredentials;
     }
-    const auth = new google.auth.GoogleAuth({ credentials, scopes: ["https://www.googleapis.com/auth/spreadsheets"] });
+
+    const auth = new google.auth.GoogleAuth({
+      credentials,
+      scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+    });
     const sheets = google.sheets({ version: "v4", auth });
 
+    // 읽기 범위
     const endRow = startRow + limit - 1;
 
-    // 입력(I:J) + 기존 ID(AC)
+    // I:J + AC 함께 읽기
     const [inRes, idRes] = await Promise.all([
       sheets.spreadsheets.values.get({ spreadsheetId, range: `${targetSheet}!I${startRow}:J${endRow}` }),
       sheets.spreadsheets.values.get({ spreadsheetId, range: `${targetSheet}!AC${startRow}:AC${endRow}` }),
@@ -496,7 +517,6 @@ export async function POST(req: Request) {
     const inRows = inRes.data.values ?? [];
     const idRows = idRes.data.values ?? [];
 
-    // 모두 공백이면 종료
     const allEmpty =
       inRows.every(r => !(r?.[0] ?? "").toString().trim() && !(r?.[1] ?? "").toString().trim()) &&
       idRows.every(r => !(r?.[0] ?? "").toString().trim());
@@ -510,7 +530,7 @@ export async function POST(req: Request) {
       });
     }
 
-    // RowInput 구성
+    // 입력 조립
     const inputs: RowInput[] = [];
     for (let i = 0; i < Math.max(inRows.length, idRows.length); i++) {
       const rowIndex = startRow + i;
@@ -521,147 +541,115 @@ export async function POST(req: Request) {
       inputs.push({ rowIndex, name, phone, existingId });
     }
 
-    // info 호출 준비
-    const origin = `${new URL(req.url).protocol}//${new URL(req.url).host}`;
+    // origin
+    const url = new URL(req.url);
+    const origin = `${url.protocol}//${url.host}`;
 
-    async function callInfoOnce(params: URLSearchParams) {
-      // 429 백오프 3회
-      let last: Response | null = null;
-      for (let i = 0; i < 3; i++) {
-        const resp = await fetch(`${origin}/api/customer/info?${params.toString()}`, { method: "GET" });
-        if (resp.status !== 429) return resp;
-        last = resp;
-        const delay = 1200 * Math.pow(2, i) + Math.floor(Math.random() * 300);
-        await sleep(delay);
-      }
-      return last!;
-    }
-
-    const tasks = inputs.map(m => async () => {
+    // 태스크
+    const tasks: Array<() => Promise<RowOutput>> = inputs.map(member => {
+      return async () => {
         let memberId = "";
-        let isRegistered: "⭕" | "❌" | "" = "";
-        let gradeNo: number | "" = "";
-        let joinDate = "";
-        let orders3m: number | "" = "";
+        let isRegisteredEmoji: "⭕" | "❌" = "❌";
+        let gradeNoCell: number | "" = "";
+        let joinDateCell = "";
+        let orders3mCell: number | "" = "";
         let hadError = false;
 
-        const phoneNorm = normalizeKoreanCellphone(m.phone);
+        const normalizedPhone = normalizeKoreanCellphone(member.phone);
+        const queryUserId = member.existingId || normalizedPhone || "";
+
+        if (!queryUserId) {
+          // 조회 자체가 불가
+          hadError = true;
+          return {
+            rowIndex: member.rowIndex,
+            memberId,
+            isRegisteredEmoji,
+            gradeNoCell,
+            joinDateCell,
+            orders3mCell,
+            hadError,
+          };
+        }
 
         try {
-          if (m.existingId) {
-            // 1) 아이디 먼저
-            const p1 = new URLSearchParams({
-              user_id: m.existingId,
-              shop_no: String(shopNo ?? 1),
-              period: "3months",
-              guess: "1", // 아이디 후보 허용
-              phone_hint: phoneNorm ?? "", // 실패 시 서버에서 폰으로 폴백
-            });
-            let resp = await callInfoOnce(p1);
+          const params = new URLSearchParams({
+            user_id: queryUserId,
+            period: "3months",
+            shop_no: String(shopNoNum),
+            guess: "1",
+          });
+          if (normalizedPhone) params.set("phone_hint", normalizedPhone); // 👈 항상 phone_hint 전달
 
-            // 혹시 서버 폴백을 쓰지 않고, 진짜로 404면 로컬에서 2차로 폰 시도
-            if (resp.status === 404 && phoneNorm) {
-              const p2 = new URLSearchParams({
-                user_id: phoneNorm,
-                shop_no: String(shopNo ?? 1),
-                period: "3months",
-                guess: "0", // 폰일 땐 아이디 추측 금지
-              });
-              resp = await callInfoOnce(p2);
-            }
+          const resp = await fetch(`${origin}/api/customer/info?${params.toString()}`, { method: "GET" });
 
-            if (!resp.ok) {
-              isRegistered = resp.status === 404 ? "❌" : "";
-              hadError = resp.status !== 404;
+          if (!resp.ok) {
+            if (resp.status === 404) {
+              isRegisteredEmoji = "❌";
             } else {
-              const payload: InfoSuccess | InfoError = await resp.json();
-              if (isInfoError(payload)) {
-                hadError = true;
-              } else {
-                memberId = payload.memberId ?? "";
-                isRegistered = "⭕";
-                gradeNo =
-                  typeof payload.memberGradeNo === "number"
-                    ? payload.memberGradeNo
-                    : Number.isFinite(firstNumberIn(payload.memberGrade))
-                    ? (firstNumberIn(payload.memberGrade) as number)
-                    : "";
-                joinDate = toDateCell(payload.joinDate);
-                orders3m = typeof payload.totalOrders === "number" ? payload.totalOrders : 0;
-              }
-            }
-          } else if (phoneNorm) {
-            // 2) 아이디가 없으면 휴대폰으로
-            const p = new URLSearchParams({
-              user_id: phoneNorm,
-              shop_no: String(shopNo ?? 1),
-              period: "3months",
-              guess: "0",
-            });
-            const resp = await callInfoOnce(p);
-
-            if (!resp.ok) {
-              isRegistered = resp.status === 404 ? "❌" : "";
-              hadError = resp.status !== 404;
-            } else {
-              const payload: InfoSuccess | InfoError = await resp.json();
-              if (isInfoError(payload)) {
-                hadError = true;
-              } else {
-                memberId = payload.memberId ?? "";
-                isRegistered = "⭕";
-                gradeNo =
-                  typeof payload.memberGradeNo === "number"
-                    ? payload.memberGradeNo
-                    : Number.isFinite(firstNumberIn(payload.memberGrade))
-                    ? (firstNumberIn(payload.memberGrade) as number)
-                    : "";
-                joinDate = toDateCell(payload.joinDate);
-                orders3m = typeof payload.totalOrders === "number" ? payload.totalOrders : 0;
-              }
+              hadError = true;
             }
           } else {
-            // 둘 다 없음
-            hadError = true;
+            const payload: InfoSuccess | InfoError = await resp.json();
+            if (isInfoError(payload)) {
+              hadError = true;
+            } else {
+              memberId = payload.memberId ?? "";
+              isRegisteredEmoji = "⭕";
+              gradeNoCell = typeof payload.memberGradeNo === "number" ? payload.memberGradeNo : "";
+              joinDateCell = toDateCell(payload.joinDate);
+              orders3mCell = typeof payload.totalOrders === "number" ? payload.totalOrders : 0;
+            }
           }
         } catch {
           hadError = true;
         }
 
-        await sleep(120);
-        return { rowIndex: m.rowIndex, memberId, isRegistered, gradeNo, joinDate, orders3m, hadError };
+        await sleep(120); // 추가 보호
+        return {
+          rowIndex: member.rowIndex,
+          memberId,
+          isRegisteredEmoji,
+          gradeNoCell,
+          joinDateCell,
+          orders3mCell,
+          hadError,
+        };
+      };
     });
 
     const outputs = await runPool<RowOutput>(tasks, concurrency);
 
-    // 시트 쓰기 (AC~AG)
-    const lastRow = inputs.length ? inputs[inputs.length - 1].rowIndex : endRow;
-    const rows: (string | number)[][] = Array.from({ length: Math.max(0, lastRow - startRow + 1) }, () => [
+    // 시트 쓰기 AC~AG
+    const lastRow = inputs.length > 0 ? inputs[inputs.length - 1].rowIndex : endRow;
+    const rowsMatrix: (string | number)[][] = Array.from({ length: Math.max(0, lastRow - startRow + 1) }, () => [
       "",
       "",
       "",
       "",
       "",
     ]);
+
     for (const r of outputs) {
-      const i = r.rowIndex - startRow;
-      if (i < 0 || i >= rows.length) continue;
-      rows[i] = [r.memberId, r.isRegistered, r.gradeNo, r.joinDate, r.orders3m];
+      const idx = r.rowIndex - startRow; // 0-based
+      if (idx < 0 || idx >= rowsMatrix.length) continue;
+      rowsMatrix[idx] = [r.memberId, r.isRegisteredEmoji, r.gradeNoCell, r.joinDateCell, r.orders3mCell];
     }
 
-    if (rows.length > 0) {
+    if (rowsMatrix.length > 0) {
       await sheets.spreadsheets.values.update({
         spreadsheetId,
-        range: `${targetSheet}!AC${startRow}:AG${startRow + rows.length - 1}`,
+        range: `${targetSheet}!AC${startRow}:AG${startRow + rowsMatrix.length - 1}`,
         valueInputOption: "RAW",
-        requestBody: { values: rows },
+        requestBody: { values: rowsMatrix },
       });
     }
 
+    // 통계 & next
     const stats = {
       total: outputs.length,
-      registered: outputs.filter(o => o.isRegistered === "⭕").length,
-      unregistered: outputs.filter(o => o.isRegistered === "❌").length,
+      registered: outputs.filter(o => o.isRegisteredEmoji === "⭕").length,
+      unregistered: outputs.filter(o => o.isRegisteredEmoji === "❌" && !o.hadError).length,
       errors: outputs.filter(o => o.hadError).length,
     };
     const nextStartRow = inputs.length > 0 ? endRow + 1 : null;
@@ -671,7 +659,7 @@ export async function POST(req: Request) {
       message: `${outputs.length}행 처리 완료 (AC~AG 반영)`,
       statistics: stats,
       nextStartRow,
-      processedRange: rows.length ? { startRow, endRow: startRow + rows.length - 1 } : undefined,
+      processedRange: rowsMatrix.length > 0 ? { startRow, endRow: startRow + rowsMatrix.length - 1 } : undefined,
       used: { limit, concurrency },
     });
   } catch (error) {

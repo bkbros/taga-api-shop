@@ -427,24 +427,23 @@
 //     return NextResponse.json({ error: "Failed to fetch customer information", processingTime }, { status: 500 });
 //   }
 // }
-// src/app/api/customer/info/route.ts
+
 import { NextResponse } from "next/server";
 import axios, { AxiosError, AxiosResponse } from "axios";
 import { loadParams } from "@/lib/ssm";
 
 /** ===================== Types ===================== **/
-
 type Customer = {
   user_id: string;
   user_name?: string;
-  member_id: string; // 로그인 아이디(주문 조회에 사용)
+  member_id: string;
   member_no?: string | number;
   created_date?: string;
   email?: string;
   phone?: string;
   last_login_date?: string;
   group?: { group_name?: string; group_no?: number };
-  group_no?: number; // 일부 몰은 top-level로 내려오는 경우가 있어 대비
+  group_no?: number;
 };
 
 type CustomersResponse = { customers: Customer[] };
@@ -454,30 +453,22 @@ type Strategy = { name: "member_id" | "cellphone"; params: Record<string, string
 type Period = "3months" | "1year";
 
 /** ===================== Phone normalize ===================== **/
-
 function normalizeKoreanCellphone(input?: string | null): string | null {
   if (!input) return null;
   const digits = input.replace(/\D/g, "");
   if (!digits) return null;
 
-  // 82 → 0 프리픽스
   if (digits.startsWith("82")) {
     const rest = digits.slice(2);
     if (rest.startsWith("10")) return `0${rest}`;
     if (rest.length >= 2 && rest[0] !== "0") return `0${rest}`;
   }
-
-  // 10xxxxxxxx → 010xxxxxxxx
   if (digits.startsWith("10")) return `0${digits}`;
-
-  // 이미 0으로 시작하는 10~11자리
   if (/^0\d{9,10}$/.test(digits)) return digits;
-
   return null;
 }
 
 /** ===================== KST Utilities ===================== **/
-
 const KST_MS = 9 * 60 * 60 * 1000;
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
@@ -487,36 +478,28 @@ function fmtKST(d: Date): string {
     k.getUTCMinutes(),
   )}:${pad2(k.getUTCSeconds())}`;
 }
-
 function addMonthsKST(base: Date, months: number): Date {
   const k = new Date(base.getTime() + KST_MS);
   k.setUTCMonth(k.getUTCMonth() + months);
   return new Date(k.getTime() - KST_MS);
 }
-
 function clamp3MonthsWindow(startKstDay: Date, endKstDay: Date): { s: Date; e: Date } {
   const s = new Date(startKstDay);
   s.setUTCHours(0, 0, 0, 0);
-
   const e = new Date(s);
   e.setUTCMonth(e.getUTCMonth() + 3);
   e.setUTCSeconds(e.getUTCSeconds() - 1);
-
   const cap = new Date(endKstDay);
   cap.setUTCHours(23, 59, 59, 0);
-
   return { s, e: new Date(Math.min(e.getTime(), cap.getTime())) };
 }
 
 /** ===================== Rate Limiter + Retry ===================== **/
-
 class RateLimiter {
   private queue: Array<() => Promise<void>> = [];
   private running = 0;
   private lastRequestAt = 0;
-
   constructor(private maxConcurrent = 3, private minIntervalMs = 200) {}
-
   execute<T>(fn: () => Promise<T>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const task = async () => {
@@ -540,7 +523,6 @@ class RateLimiter {
       this.pump();
     });
   }
-
   private pump() {
     if (this.running >= this.maxConcurrent) return;
     const next = this.queue.shift();
@@ -575,16 +557,15 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, baseDelay = 10
 }
 
 /** ===================== Handler ===================== **/
-
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const userIdRaw = url.searchParams.get("user_id");
-  const phoneHintRaw = url.searchParams.get("phone_hint"); // 👈 휴대폰 힌트(폴백용)
+  const primaryRaw = url.searchParams.get("user_id");
+  const phoneHintRaw = url.searchParams.get("phone_hint");
   const period = (url.searchParams.get("period") || "3months") as Period;
   const shopNo = Number(url.searchParams.get("shop_no") ?? "1") || 1;
-  const guess = url.searchParams.get("guess") !== "0"; // 숫자-only 아이디 후보(@k/@n) 시도 여부
+  const guess = url.searchParams.get("guess") !== "0";
 
-  if (!userIdRaw) {
+  if (!primaryRaw) {
     return NextResponse.json({ error: "user_id parameter is required" }, { status: 400 });
   }
   if (period !== "3months" && period !== "1year") {
@@ -592,7 +573,7 @@ export async function GET(req: Request) {
   }
 
   const startT = Date.now();
-  const primary = decodeURIComponent(userIdRaw).trim();
+  const primary = decodeURIComponent(primaryRaw).trim();
   const phoneHint = normalizeKoreanCellphone(phoneHintRaw);
 
   console.log(`[REQUEST] primary="${primary}", phone_hint="${phoneHint ?? ""}", period=${period}, shop_no=${shopNo}`);
@@ -600,30 +581,29 @@ export async function GET(req: Request) {
   try {
     const { access_token } = (await loadParams(["access_token"])) as { access_token: string };
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID;
-    if (!mallId) {
-      return NextResponse.json({ error: "Missing NEXT_PUBLIC_CAFE24_MALL_ID" }, { status: 500 });
-    }
+    if (!mallId) return NextResponse.json({ error: "Missing NEXT_PUBLIC_CAFE24_MALL_ID" }, { status: 500 });
 
     const authHeaders: Record<string, string> = {
       Authorization: `Bearer ${access_token}`,
       "X-Cafe24-Api-Version": "2025-06-01",
     };
 
-    /** ------- 1) 고객 조회: member_id 먼저 → 실패 시 cellphone ------- **/
+    /** 1) 항상 member_id 먼저 → 실패 시 cellphone 폴백 **/
     const strategies: Strategy[] = [];
-    const looksLikePhone = !!normalizeKoreanCellphone(primary);
     const isNumericOnly = /^\d+$/.test(primary);
 
-    // 항상 member_id 먼저(단, primary가 명백히 전화번호면 제외)
-    if (!looksLikePhone) {
-      const idCandidates = guess && isNumericOnly ? [primary, `${primary}@k`, `${primary}@n`] : [primary];
+    // member_id 후보 (항상 먼저)
+    if (isNumericOnly) {
+      const idCandidates = guess ? [primary, `${primary}@k`, `${primary}@n`] : [primary];
       for (const cand of idCandidates) {
         strategies.push({ name: "member_id", params: { limit: 1, member_id: cand } });
       }
+    } else {
+      strategies.push({ name: "member_id", params: { limit: 1, member_id: primary } });
     }
 
-    // 휴대폰 폴백: phone_hint 우선, 없으면 primary가 폰이면 그 값 사용
-    const phoneForFallback = phoneHint ?? (looksLikePhone ? normalizeKoreanCellphone(primary) : null);
+    // cellphone 폴백 (phone_hint 우선, 없으면 primary에서 추론)
+    const phoneForFallback = phoneHint ?? normalizeKoreanCellphone(primary);
     if (phoneForFallback) {
       strategies.push({ name: "cellphone", params: { limit: 1, cellphone: phoneForFallback } });
     }
@@ -645,7 +625,6 @@ export async function GET(req: Request) {
         );
 
         if (r.status !== 200) {
-          // 404/422 등은 다음 전략으로
           console.warn(`[CUSTOMERS] status=${r.status}`, r.data);
           continue;
         }
@@ -663,7 +642,6 @@ export async function GET(req: Request) {
       } catch (err: unknown) {
         const ax = err as AxiosError<unknown>;
         console.error(`[CUSTOMERS] ${st.name} failed`, ax.response?.status, ax.response?.data);
-        // 다음 전략 계속
       }
     }
 
@@ -675,7 +653,7 @@ export async function GET(req: Request) {
       );
     }
 
-    /** ------- 2) Orders: recent 3 months (KST) ------- **/
+    /** 2) 최근 3개월 주문수 (KST) **/
     const now = new Date();
     const threeAgo = addMonthsKST(now, -3);
     const { s, e } = clamp3MonthsWindow(threeAgo, now);
@@ -699,13 +677,13 @@ export async function GET(req: Request) {
     );
     const totalOrders = countRes.data?.count ?? 0;
 
-    // 등급 번호(숫자): group.group_no > top-level group_no
+    // 등급 번호(숫자)
     const memberGradeNo =
       (typeof found.group?.group_no === "number" ? found.group.group_no : undefined) ??
       (typeof found.group_no === "number" ? found.group_no : undefined);
 
     const processingTime = Date.now() - startT;
-    const body = {
+    return NextResponse.json({
       userId: found.user_id,
       userName: found.user_name,
       memberId: memberLoginId,
@@ -720,9 +698,7 @@ export async function GET(req: Request) {
       shopNo,
       searchMethod: foundBy,
       processingTime,
-    };
-
-    return NextResponse.json(body);
+    });
   } catch (error: unknown) {
     const processingTime = Date.now() - startT;
     console.error(`[ERROR] info route failed after ${processingTime}ms`, error);
