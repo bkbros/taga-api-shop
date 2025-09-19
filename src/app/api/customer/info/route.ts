@@ -427,83 +427,108 @@
 //     return NextResponse.json({ error: "Failed to fetch customer information", processingTime }, { status: 500 });
 //   }
 // }
+// src/app/api/customer/info/route.ts
 import { NextResponse } from "next/server";
 import axios, { AxiosError, AxiosResponse } from "axios";
 import { loadParams } from "@/lib/ssm";
 
-/** ========= Types ========= **/
+/** ===================== Types ===================== **/
+
 type Customer = {
   user_id: string;
   user_name?: string;
-  member_id: string;
+  member_id: string; // 로그인 아이디(주문 조회에 사용)
   member_no?: string | number;
   created_date?: string;
   email?: string;
   phone?: string;
   last_login_date?: string;
   group?: { group_name?: string; group_no?: number };
-  group_no?: number;
+  group_no?: number; // 일부 몰은 top-level로 내려오는 경우가 있어 대비
 };
+
 type CustomersResponse = { customers: Customer[] };
 type OrdersCountResponse = { count: number };
+
 type Strategy = { name: "member_id" | "cellphone"; params: Record<string, string | number> };
 type Period = "3months" | "1year";
 
-/** ========= Phone normalize ========= **/
+/** ===================== Phone normalize ===================== **/
+
 function normalizeKoreanCellphone(input?: string | null): string | null {
   if (!input) return null;
   const digits = input.replace(/\D/g, "");
   if (!digits) return null;
+
+  // 82 → 0 프리픽스
   if (digits.startsWith("82")) {
     const rest = digits.slice(2);
     if (rest.startsWith("10")) return `0${rest}`;
     if (rest.length >= 2 && rest[0] !== "0") return `0${rest}`;
   }
+
+  // 10xxxxxxxx → 010xxxxxxxx
   if (digits.startsWith("10")) return `0${digits}`;
+
+  // 이미 0으로 시작하는 10~11자리
   if (/^0\d{9,10}$/.test(digits)) return digits;
+
   return null;
 }
 
-/** ========= KST helpers ========= **/
-const KST = 9 * 60 * 60 * 1000;
+/** ===================== KST Utilities ===================== **/
+
+const KST_MS = 9 * 60 * 60 * 1000;
 const pad2 = (n: number) => String(n).padStart(2, "0");
-function fmtKST(d: Date) {
-  const k = new Date(d.getTime() + KST);
+
+function fmtKST(d: Date): string {
+  const k = new Date(d.getTime() + KST_MS);
   return `${k.getUTCFullYear()}-${pad2(k.getUTCMonth() + 1)}-${pad2(k.getUTCDate())} ${pad2(k.getUTCHours())}:${pad2(
     k.getUTCMinutes(),
   )}:${pad2(k.getUTCSeconds())}`;
 }
-function addMonthsKST(base: Date, months: number) {
-  const k = new Date(base.getTime() + KST);
+
+function addMonthsKST(base: Date, months: number): Date {
+  const k = new Date(base.getTime() + KST_MS);
   k.setUTCMonth(k.getUTCMonth() + months);
-  return new Date(k.getTime() - KST);
+  return new Date(k.getTime() - KST_MS);
 }
-function clamp3MonthsWindow(ksStart: Date, ksEnd: Date) {
-  const s = new Date(ksStart);
+
+function clamp3MonthsWindow(startKstDay: Date, endKstDay: Date): { s: Date; e: Date } {
+  const s = new Date(startKstDay);
   s.setUTCHours(0, 0, 0, 0);
+
   const e = new Date(s);
   e.setUTCMonth(e.getUTCMonth() + 3);
   e.setUTCSeconds(e.getUTCSeconds() - 1);
-  const cap = new Date(ksEnd);
+
+  const cap = new Date(endKstDay);
   cap.setUTCHours(23, 59, 59, 0);
+
   return { s, e: new Date(Math.min(e.getTime(), cap.getTime())) };
 }
 
-/** ========= limiter + retry ========= **/
+/** ===================== Rate Limiter + Retry ===================== **/
+
 class RateLimiter {
-  private q: Array<() => Promise<void>> = [];
+  private queue: Array<() => Promise<void>> = [];
   private running = 0;
-  private last = 0;
-  constructor(private maxC = 3, private minMs = 200) {}
-  execute<T>(fn: () => Promise<T>) {
+  private lastRequestAt = 0;
+
+  constructor(private maxConcurrent = 3, private minIntervalMs = 200) {}
+
+  execute<T>(fn: () => Promise<T>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const task = async () => {
         try {
           const now = Date.now();
-          const wait = this.minMs - (now - this.last);
-          if (wait > 0) await new Promise(r => setTimeout(r, wait));
-          this.last = Date.now();
-          resolve(await fn());
+          const delta = now - this.lastRequestAt;
+          if (delta < this.minIntervalMs) {
+            await new Promise(r => setTimeout(r, this.minIntervalMs - delta));
+          }
+          this.lastRequestAt = Date.now();
+          const res = await fn();
+          resolve(res);
         } catch (e) {
           reject(e);
         } finally {
@@ -511,31 +536,33 @@ class RateLimiter {
           this.pump();
         }
       };
-      this.q.push(task);
+      this.queue.push(task);
       this.pump();
     });
   }
+
   private pump() {
-    if (this.running >= this.maxC) return;
-    const t = this.q.shift();
-    if (!t) return;
+    if (this.running >= this.maxConcurrent) return;
+    const next = this.queue.shift();
+    if (!next) return;
     this.running++;
-    t();
+    next();
   }
 }
 const limiter = new RateLimiter(3, 200);
 
 async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, baseDelay = 1000): Promise<T> {
-  let last: unknown;
+  let lastErr: unknown;
   for (let i = 0; i <= maxRetries; i++) {
     try {
       return await limiter.execute(fn);
-    } catch (e) {
-      last = e;
+    } catch (e: unknown) {
+      lastErr = e;
       if (axios.isAxiosError(e)) {
         const st = e.response?.status ?? 0;
         if ((st === 429 || st >= 500) && i < maxRetries) {
-          const delay = baseDelay * Math.pow(2, i) + Math.floor(Math.random() * 300);
+          const jitter = Math.floor(Math.random() * 300);
+          const delay = baseDelay * Math.pow(2, i) + jitter;
           await new Promise(r => setTimeout(r, delay));
           continue;
         }
@@ -543,17 +570,19 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, baseDelay = 10
       break;
     }
   }
-  throw last instanceof Error ? last : new Error(String(last));
+  if (lastErr instanceof Error) throw lastErr;
+  throw new Error(String(lastErr));
 }
 
-/** ========= Handler ========= **/
+/** ===================== Handler ===================== **/
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const userIdRaw = url.searchParams.get("user_id");
-  const phoneHintRaw = url.searchParams.get("phone_hint"); // 👈 폰 힌트 추가
+  const phoneHintRaw = url.searchParams.get("phone_hint"); // 👈 휴대폰 힌트(폴백용)
   const period = (url.searchParams.get("period") || "3months") as Period;
   const shopNo = Number(url.searchParams.get("shop_no") ?? "1") || 1;
-  const guess = url.searchParams.get("guess") !== "0"; // 아이디 후보(@k/@n) 시도 여부
+  const guess = url.searchParams.get("guess") !== "0"; // 숫자-only 아이디 후보(@k/@n) 시도 여부
 
   if (!userIdRaw) {
     return NextResponse.json({ error: "user_id parameter is required" }, { status: 400 });
@@ -563,41 +592,45 @@ export async function GET(req: Request) {
   }
 
   const startT = Date.now();
-  const raw = decodeURIComponent(userIdRaw).trim();
+  const primary = decodeURIComponent(userIdRaw).trim();
   const phoneHint = normalizeKoreanCellphone(phoneHintRaw);
 
-  console.log(`[REQUEST] primary="${raw}", phone_hint="${phoneHint ?? ""}", period=${period}`);
+  console.log(`[REQUEST] primary="${primary}", phone_hint="${phoneHint ?? ""}", period=${period}, shop_no=${shopNo}`);
 
   try {
     const { access_token } = (await loadParams(["access_token"])) as { access_token: string };
-    const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
-    const authHeaders = { Authorization: `Bearer ${access_token}`, "X-Cafe24-Api-Version": "2025-06-01" };
+    const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID;
+    if (!mallId) {
+      return NextResponse.json({ error: "Missing NEXT_PUBLIC_CAFE24_MALL_ID" }, { status: 500 });
+    }
 
-    /** ------- 1) Search order: member_id → cellphone (with phone_hint) ------- **/
+    const authHeaders: Record<string, string> = {
+      Authorization: `Bearer ${access_token}`,
+      "X-Cafe24-Api-Version": "2025-06-01",
+    };
+
+    /** ------- 1) 고객 조회: member_id 먼저 → 실패 시 cellphone ------- **/
     const strategies: Strategy[] = [];
-    const looksLikePhone = !!normalizeKoreanCellphone(raw);
-    const isNumericOnly = /^\d+$/.test(raw);
+    const looksLikePhone = !!normalizeKoreanCellphone(primary);
+    const isNumericOnly = /^\d+$/.test(primary);
 
-    // 항상 아이디 먼저 시도
+    // 항상 member_id 먼저(단, primary가 명백히 전화번호면 제외)
     if (!looksLikePhone) {
-      const idCandidates = guess && isNumericOnly ? [raw, `${raw}@k`, `${raw}@n`] : [raw];
+      const idCandidates = guess && isNumericOnly ? [primary, `${primary}@k`, `${primary}@n`] : [primary];
       for (const cand of idCandidates) {
         strategies.push({ name: "member_id", params: { limit: 1, member_id: cand } });
       }
-    } else {
-      // raw가 전화번호처럼 보여도, 아이디 케이스가 아니므로 넘어감
-      // (배치 쪽에서 AC가 있으면 그걸 user_id로 넘겨주니 여기선 phone 먼저 가는게 정상)
     }
 
-    // 아이디가 안 맞으면 휴대폰(힌트 우선, 없으면 raw가 폰이면 raw)
-    const phoneForFallback = phoneHint ?? (looksLikePhone ? normalizeKoreanCellphone(raw) : null);
+    // 휴대폰 폴백: phone_hint 우선, 없으면 primary가 폰이면 그 값 사용
+    const phoneForFallback = phoneHint ?? (looksLikePhone ? normalizeKoreanCellphone(primary) : null);
     if (phoneForFallback) {
       strategies.push({ name: "cellphone", params: { limit: 1, cellphone: phoneForFallback } });
     }
 
     let found: Customer | null = null;
     let memberLoginId = "";
-    let foundBy: "member_id" | "cellphone" | null = null;
+    let foundBy: Strategy["name"] | null = null;
 
     for (const st of strategies) {
       console.log(`[CUSTOMERS] try by ${st.name}`, st.params);
@@ -612,6 +645,7 @@ export async function GET(req: Request) {
         );
 
         if (r.status !== 200) {
+          // 404/422 등은 다음 전략으로
           console.warn(`[CUSTOMERS] status=${r.status}`, r.data);
           continue;
         }
@@ -623,15 +657,22 @@ export async function GET(req: Request) {
           foundBy = st.name;
           console.log(`[CUSTOMERS] OK by=${foundBy}, member_id=${memberLoginId}`);
           break;
+        } else {
+          console.log(`[CUSTOMERS] ${st.name} no result`);
         }
-      } catch (err) {
-        const ax = err as AxiosError;
+      } catch (err: unknown) {
+        const ax = err as AxiosError<unknown>;
         console.error(`[CUSTOMERS] ${st.name} failed`, ax.response?.status, ax.response?.data);
+        // 다음 전략 계속
       }
     }
 
     if (!found || !memberLoginId) {
-      return NextResponse.json({ error: "Customer not found", tried: strategies.map(s => s.name) }, { status: 404 });
+      const processingTime = Date.now() - startT;
+      return NextResponse.json(
+        { error: "Customer not found", triedStrategies: strategies.map(s => s.name), processingTime },
+        { status: 404 },
+      );
     }
 
     /** ------- 2) Orders: recent 3 months (KST) ------- **/
@@ -640,6 +681,8 @@ export async function GET(req: Request) {
     const { s, e } = clamp3MonthsWindow(threeAgo, now);
     const startStr = fmtKST(s);
     const endStr = fmtKST(e);
+
+    console.log(`[ORDERS] window: ${startStr} ~ ${endStr}`);
 
     const countRes: AxiosResponse<OrdersCountResponse> = await withRetry(() =>
       axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders/count`, {
@@ -656,11 +699,12 @@ export async function GET(req: Request) {
     );
     const totalOrders = countRes.data?.count ?? 0;
 
-    // 등급 번호
+    // 등급 번호(숫자): group.group_no > top-level group_no
     const memberGradeNo =
       (typeof found.group?.group_no === "number" ? found.group.group_no : undefined) ??
-      (typeof (found as any).group_no === "number" ? (found as any).group_no : undefined);
+      (typeof found.group_no === "number" ? found.group_no : undefined);
 
+    const processingTime = Date.now() - startT;
     const body = {
       userId: found.user_id,
       userName: found.user_name,
@@ -675,20 +719,37 @@ export async function GET(req: Request) {
       period,
       shopNo,
       searchMethod: foundBy,
-      processingTime: Date.now() - startT,
+      processingTime,
     };
 
     return NextResponse.json(body);
-  } catch (error) {
-    console.error(`[ERROR] info route failed`, error);
+  } catch (error: unknown) {
+    const processingTime = Date.now() - startT;
+    console.error(`[ERROR] info route failed after ${processingTime}ms`, error);
+
     if (axios.isAxiosError(error)) {
       const st = error.response?.status;
       const data = error.response?.data;
-      if (st === 401) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-      if (st === 422) return NextResponse.json({ error: "Invalid request", details: data }, { status: 422 });
-      if (st === 429) return NextResponse.json({ error: "Rate limited" }, { status: 429 });
-      if (st && st >= 500) return NextResponse.json({ error: "Upstream error", details: data }, { status: 502 });
+      if (st === 401)
+        return NextResponse.json({ error: "Unauthorized - token may be expired", processingTime }, { status: 401 });
+      if (st === 422)
+        return NextResponse.json(
+          { error: "Invalid request parameters", details: data, processingTime },
+          { status: 422 },
+        );
+      if (st === 404) return NextResponse.json({ error: "Not found", details: data, processingTime }, { status: 404 });
+      if (st === 429)
+        return NextResponse.json(
+          { error: "Rate limited by Cafe24 API. Please retry later.", processingTime },
+          { status: 429 },
+        );
+      if (st && st >= 500)
+        return NextResponse.json(
+          { error: "Upstream server error from Cafe24", details: data, processingTime },
+          { status: 502 },
+        );
     }
-    return NextResponse.json({ error: "Failed to fetch customer information" }, { status: 500 });
+
+    return NextResponse.json({ error: "Failed to fetch customer information", processingTime }, { status: 500 });
   }
 }

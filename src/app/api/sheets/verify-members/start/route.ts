@@ -537,8 +537,7 @@ export async function POST(req: Request) {
       return last!;
     }
 
-    const tasks = inputs.map(m =>
-      async () => {
+    const tasks = inputs.map(m => async () => {
         let memberId = "";
         let isRegistered: "⭕" | "❌" | "" = "";
         let gradeNo: number | "" = "";
@@ -631,7 +630,6 @@ export async function POST(req: Request) {
 
         await sleep(120);
         return { rowIndex: m.rowIndex, memberId, isRegistered, gradeNo, joinDate, orders3m, hadError };
-      };
     });
 
     const outputs = await runPool<RowOutput>(tasks, concurrency);
