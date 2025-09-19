@@ -335,7 +335,6 @@
 //     );
 //   }
 // }
-// src/app/api/sheets/verify-members/start/route.ts
 import { NextResponse } from "next/server";
 import { google } from "googleapis";
 
@@ -375,7 +374,6 @@ type RowInput = {
 type RowOutput = {
   rowIndex: number;
   memberId: string;
-  // 에러는 공백(또는 "⚠️")으로 남김
   isRegisteredCell: "⭕" | "❌" | "";
   gradeNoCell: number | "";
   joinDateCell: string;
@@ -396,14 +394,18 @@ function normalizeKoreanCellphone(input: string): string | null {
   if (/^0\d{9,10}$/.test(digits)) return digits;
   return null;
 }
+
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
 const toDateCell = (v?: string): string => {
   if (!v) return "";
   if (v.includes("T")) return v.split("T")[0]!;
   if (v.includes(" ")) return v.split(" ")[0]!;
   return v;
 };
+
 const isInfoError = (v: unknown): v is InfoError => typeof v === "object" && v !== null && "error" in v;
+
 const firstNumberIn = (s?: string): number | undefined => {
   if (!s) return undefined;
   const m = s.match(/\d+/);
@@ -426,6 +428,23 @@ async function runPool<T>(tasks: Array<() => Promise<T>>, concurrency: number): 
   return results;
 }
 
+// Google Sheets value 배열이 “완전 빈 블록”인지 판단
+function isBlockAllEmpty(vals: string[][] | undefined): boolean {
+  const rows = vals ?? [];
+  return rows.every(r => {
+    const a = (r?.[0] ?? "").toString().trim();
+    const b = (r?.[1] ?? "").toString().trim();
+    return !a && !b; // 두 칸(I,J) 모두 빈칸
+  });
+}
+function isColumnAllEmpty(vals: string[][] | undefined): boolean {
+  const rows = vals ?? [];
+  return rows.every(r => {
+    const a = (r?.[0] ?? "").toString().trim();
+    return !a; // AC 한 칸
+  });
+}
+
 /** ========= Handler ========= **/
 export async function POST(req: Request) {
   try {
@@ -438,6 +457,8 @@ export async function POST(req: Request) {
       startRow: startRowRaw,
       limit: limitRaw,
       concurrency: concurrencyRaw,
+      // 선택: 빈 블록을 몇 개까지 미리 훑을지
+      skipAheadBlocks = 8,
     } = await req.json();
 
     if (!spreadsheetId) {
@@ -446,7 +467,7 @@ export async function POST(req: Request) {
 
     const targetSheet = (sheetName || "").trim() || "Sheet1";
     const shopNoNum = Number.isInteger(Number(shopNo)) ? Number(shopNo) : 1;
-    const startRow = Number.isInteger(Number(startRowRaw)) ? Number(startRowRaw) : 2;
+    const startRow = Number.isInteger(Number(startRowRaw)) ? Number(startRowRaw) : 2; // 헤더 다음
     const limit = Math.max(1, Math.min(Number(limitRaw ?? 100), 200));
     const concurrency = Math.max(1, Math.min(Number(concurrencyRaw ?? 2), 5));
 
@@ -474,7 +495,7 @@ export async function POST(req: Request) {
     // 읽기 범위
     const endRow = startRow + limit - 1;
 
-    // I:J + 기존 AC 읽기
+    // 현재 블록: 입력(I:J) + 기존 ID(AC)
     const [inRes, idRes] = await Promise.all([
       sheets.spreadsheets.values.get({ spreadsheetId, range: `${targetSheet}!I${startRow}:J${endRow}` }),
       sheets.spreadsheets.values.get({ spreadsheetId, range: `${targetSheet}!AC${startRow}:AC${endRow}` }),
@@ -482,19 +503,61 @@ export async function POST(req: Request) {
     const inRows = inRes.data.values ?? [];
     const idRows = idRes.data.values ?? [];
 
-    const allEmpty =
-      inRows.every(r => !(r?.[0] ?? "").toString().trim() && !(r?.[1] ?? "").toString().trim()) &&
-      idRows.every(r => !(r?.[0] ?? "").toString().trim());
-    if (allEmpty) {
+    const nowBlockEmpty = isBlockAllEmpty(inRows) && isColumnAllEmpty(idRows);
+
+    // ⛳️ 빈 블록이면, 앞으로 skipAheadBlocks 만큼 미리 훑어서 다음 유효 블록으로 점프
+    if (nowBlockEmpty) {
+      const blocks = Math.max(1, Math.min(Number(skipAheadBlocks), 30)); // 안전상한
+      const ranges: string[] = [];
+      const starts: number[] = [];
+      for (let k = 1; k <= blocks; k++) {
+        const s = startRow + k * limit;
+        const e = s + limit - 1;
+        starts.push(s);
+        ranges.push(`${targetSheet}!I${s}:J${e}`, `${targetSheet}!AC${s}:AC${e}`);
+      }
+
+      if (ranges.length > 0) {
+        const peek = await sheets.spreadsheets.values.batchGet({
+          spreadsheetId,
+          ranges,
+        });
+
+        const vrs = peek.data.valueRanges ?? [];
+        let foundStart: number | null = null;
+
+        for (let i = 0; i < starts.length; i++) {
+          const inVals = vrs[i * 2]?.values ?? [];
+          const acVals = vrs[i * 2 + 1]?.values ?? [];
+          const blockEmpty = isBlockAllEmpty(inVals) && isColumnAllEmpty(acVals);
+          if (!blockEmpty) {
+            foundStart = starts[i];
+            break;
+          }
+        }
+
+        if (foundStart != null) {
+          return NextResponse.json({
+            success: true,
+            message: `빈 구간을 건너뜀 → 다음 시작 행 ${foundStart}`,
+            statistics: { total: 0, registered: 0, unregistered: 0, errors: 0 },
+            nextStartRow: foundStart,
+            used: { limit, concurrency },
+          });
+        }
+      }
+
+      // 앞쪽도 전부 비어있으면 진짜 끝
       return NextResponse.json({
         success: true,
-        message: "더 이상 처리할 행이 없습니다.",
+        message: "더 이상 처리할 행이 없습니다. (빈 구간 이후에도 데이터 없음)",
         statistics: { total: 0, registered: 0, unregistered: 0, errors: 0 },
         nextStartRow: null,
         used: { limit, concurrency },
       });
     }
 
+    // RowInput 구성
     const inputs: RowInput[] = [];
     for (let i = 0; i < Math.max(inRows.length, idRows.length); i++) {
       const rowIndex = startRow + i;
@@ -505,11 +568,11 @@ export async function POST(req: Request) {
       inputs.push({ rowIndex, name, phone, existingId });
     }
 
-    // /api/customer/info 호출 origin
+    // /api/customer/info 호출 준비
     const url = new URL(req.url);
     const origin = `${url.protocol}//${url.host}`;
 
-    // 429 대응: 로컬 재시도 래퍼 (info 라우트도 재시도하지만 여기서 한 번 더 넉넉히)
+    // 429 대응 로컬 재시도
     const callInfoWithLocalRetry = async (queryUserId: string) => {
       let lastRes: Response | null = null;
       for (let attempt = 0; attempt < 3; attempt++) {
@@ -525,25 +588,23 @@ export async function POST(req: Request) {
         );
         if (resp.status !== 429) return resp;
         lastRes = resp;
-        // 429면 지수 백오프 + 지터
         const delay = 1200 * Math.pow(2, attempt) + Math.floor(Math.random() * 400);
         await sleep(delay);
       }
-      // 마지막 응답 반환(여전히 429일 수 있음)
       return lastRes!;
     };
 
+    // 태스크들
     const tasks: Array<() => Promise<RowOutput>> = inputs.map(member => {
       return async () => {
         let memberId = "";
-        // 기본은 공백! (에러인 경우 ❌로 보이지 않게)
         let isRegisteredCell: "⭕" | "❌" | "" = "";
         let gradeNoCell: number | "" = "";
         let joinDateCell = "";
         let orders3mCell: number | "" = "";
         let hadError = false;
 
-        // 1순위: AC ID, 없으면 휴대폰 정규화
+        // 1순위: AC ID, 없으면 휴대폰
         let queryUserId = member.existingId || "";
         if (!queryUserId) {
           const normalized = normalizeKoreanCellphone(member.phone);
@@ -567,11 +628,9 @@ export async function POST(req: Request) {
 
           if (!resp.ok) {
             if (resp.status === 404) {
-              // 진짜 미가입만 ❌
               isRegisteredCell = "❌";
             } else {
-              // 429/5xx 등은 에러로 표시(공백 유지)
-              hadError = true;
+              hadError = true; // 429/5xx 등은 공백 유지
             }
           } else {
             const payload: InfoSuccess | InfoError = await resp.json();
@@ -594,9 +653,7 @@ export async function POST(req: Request) {
           hadError = true;
         }
 
-        // 추가 완충
-        await sleep(150);
-
+        await sleep(150); // 추가 완충
         return {
           rowIndex: member.rowIndex,
           memberId,
@@ -625,13 +682,7 @@ export async function POST(req: Request) {
     for (const r of outputs) {
       const idx = r.rowIndex - startRow;
       if (idx < 0 || idx >= rowsMatrix.length) continue;
-      rowsMatrix[idx] = [
-        r.memberId, // AC
-        r.isRegisteredCell, // AD  ⭕/❌/""(오류)
-        r.gradeNoCell, // AE
-        r.joinDateCell, // AF
-        r.orders3mCell, // AG
-      ];
+      rowsMatrix[idx] = [r.memberId, r.isRegisteredCell, r.gradeNoCell, r.joinDateCell, r.orders3mCell];
     }
 
     if (rowsMatrix.length > 0) {
@@ -647,7 +698,7 @@ export async function POST(req: Request) {
     const stats = {
       total: outputs.length,
       registered: outputs.filter(o => o.isRegisteredCell === "⭕").length,
-      unregistered: outputs.filter(o => o.isRegisteredCell === "❌").length, // 에러는 제외됨
+      unregistered: outputs.filter(o => o.isRegisteredCell === "❌").length,
       errors: outputs.filter(o => o.hadError).length,
     };
     const processedAny = inputs.length > 0;
