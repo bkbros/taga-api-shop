@@ -1,3 +1,340 @@
+// // src/app/api/sheets/verify-members/start/route.ts
+// import { NextResponse } from "next/server";
+// import { google } from "googleapis";
+
+// /** ========= Types ========= **/
+
+// type GoogleCredentials = {
+//   type: string;
+//   project_id: string;
+//   private_key_id: string;
+//   private_key: string;
+//   client_email: string;
+//   client_id: string;
+//   auth_uri: string;
+//   token_uri: string;
+//   auth_provider_x509_cert_url: string;
+//   client_x509_cert_url: string;
+// };
+
+// type InfoSuccess = {
+//   userId?: string;
+//   userName?: string;
+//   memberId: string;
+//   memberGrade?: string; // 예: "VIP 3"
+//   memberGradeNo?: number; // 숫자
+//   joinDate?: string; // ISO or 'YYYY-MM-DD ...'
+//   totalOrders: number; // 최근 3개월 주문 건수
+// };
+
+// type InfoError = { error: string; details?: unknown };
+
+// type RowInput = {
+//   rowIndex: number; // 시트 실제 행 번호(1-based)
+//   name: string;
+//   phone: string;
+//   existingId: string; // AC열 값(있으면 ID로 우선 조회)
+// };
+
+// type RowOutput = {
+//   rowIndex: number;
+//   memberId: string;
+//   isRegisteredEmoji: "⭕" | "❌";
+//   gradeNoCell: number | "";
+//   joinDateCell: string;
+//   orders3mCell: number | "";
+//   hadError: boolean;
+// };
+
+// /** ========= Utils ========= **/
+
+// function normalizeKoreanCellphone(input: string): string | null {
+//   const digits = input.replace(/\D/g, "");
+//   if (!digits) return null;
+//   if (digits.startsWith("82")) {
+//     const rest = digits.slice(2);
+//     if (rest.startsWith("10")) return `0${rest}`;
+//     if (rest.length >= 2 && rest[0] !== "0") return `0${rest}`;
+//   }
+//   if (digits.startsWith("10")) return `0${digits}`;
+//   if (/^0\d{9,10}$/.test(digits)) return digits;
+//   return null;
+// }
+
+// const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+// const toDateCell = (v?: string): string => {
+//   if (!v) return "";
+//   if (v.includes("T")) return v.split("T")[0]!;
+//   if (v.includes(" ")) return v.split(" ")[0]!;
+//   return v;
+// };
+
+// const isInfoError = (v: unknown): v is InfoError => typeof v === "object" && v !== null && "error" in v;
+
+// const firstNumberIn = (s?: string): number | undefined => {
+//   if (!s) return undefined;
+//   const m = s.match(/\d+/);
+//   return m ? Number(m[0]) : undefined;
+// };
+
+// /** ========= Simple promise pool ========= **/
+
+// async function runPool<T>(tasks: Array<() => Promise<T>>, concurrency: number): Promise<T[]> {
+//   const results: T[] = [];
+//   let i = 0;
+
+//   async function worker() {
+//     while (i < tasks.length) {
+//       const my = i++;
+//       const out = await tasks[my]();
+//       results[my] = out;
+//     }
+//   }
+
+//   const n = Math.max(1, Math.min(concurrency, tasks.length));
+//   await Promise.all(Array.from({ length: n }, () => worker()));
+//   return results;
+// }
+
+// /** ========= Handler ========= **/
+
+// export async function POST(req: Request) {
+//   try {
+//     const {
+//       spreadsheetId,
+//       sheetName,
+//       useEnvCredentials,
+//       serviceAccountKey,
+//       shopNo,
+//       startRow: startRowRaw,
+//       limit: limitRaw,
+//       concurrency: concurrencyRaw,
+//     } = await req.json();
+
+//     if (!spreadsheetId) {
+//       return NextResponse.json({ error: "spreadsheetId가 필요합니다" }, { status: 400 });
+//     }
+
+//     const targetSheet = (sheetName || "").trim() || "Sheet1";
+//     const shopNoNum = Number.isInteger(Number(shopNo)) ? Number(shopNo) : 1;
+//     const startRow = Number.isInteger(Number(startRowRaw)) ? Number(startRowRaw) : 2; // 헤더 다음
+//     const limit = Math.max(1, Math.min(Number(limitRaw ?? 100), 200));
+//     const concurrency = Math.max(1, Math.min(Number(concurrencyRaw ?? 2), 5));
+
+//     // Google 인증
+//     let credentials: GoogleCredentials;
+//     if (useEnvCredentials) {
+//       const googleCredJson = process.env.GOOGLE_CRED_JSON;
+//       if (!googleCredJson) {
+//         return NextResponse.json({ error: "환경변수 GOOGLE_CRED_JSON 이 설정되지 않았습니다" }, { status: 500 });
+//       }
+//       credentials = JSON.parse(Buffer.from(googleCredJson, "base64").toString("utf-8")) as GoogleCredentials;
+//     } else {
+//       if (!serviceAccountKey) {
+//         return NextResponse.json({ error: "serviceAccountKey가 필요합니다" }, { status: 400 });
+//       }
+//       credentials = JSON.parse(serviceAccountKey) as GoogleCredentials;
+//     }
+
+//     const auth = new google.auth.GoogleAuth({
+//       credentials,
+//       scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+//     });
+//     const sheets = google.sheets({ version: "v4", auth });
+
+//     // 읽기 범위 계산
+//     const endRow = startRow + limit - 1;
+
+//     // 1) 입력 데이터(I:J) + 기존 ID(AC) 함께 읽기
+//     const [inRes, idRes] = await Promise.all([
+//       sheets.spreadsheets.values.get({ spreadsheetId, range: `${targetSheet}!I${startRow}:J${endRow}` }),
+//       sheets.spreadsheets.values.get({ spreadsheetId, range: `${targetSheet}!AC${startRow}:AC${endRow}` }),
+//     ]);
+
+//     const inRows = inRes.data.values ?? [];
+//     const idRows = idRes.data.values ?? [];
+
+//     // 모두 공백이면 작업 종료
+//     const allEmpty =
+//       inRows.every(r => !(r?.[0] ?? "").toString().trim() && !(r?.[1] ?? "").toString().trim()) &&
+//       idRows.every(r => !(r?.[0] ?? "").toString().trim());
+//     if (allEmpty) {
+//       return NextResponse.json({
+//         success: true,
+//         message: "더 이상 처리할 행이 없습니다.",
+//         statistics: { total: 0, registered: 0, unregistered: 0, errors: 0 },
+//         nextStartRow: null,
+//         used: { limit, concurrency },
+//       });
+//     }
+
+//     // RowInput 만들기
+//     const inputs: RowInput[] = [];
+//     for (let i = 0; i < Math.max(inRows.length, idRows.length); i++) {
+//       const rowIndex = startRow + i;
+//       const name = (inRows[i]?.[0] ?? "").toString().trim();
+//       const phone = (inRows[i]?.[1] ?? "").toString().trim();
+//       const existingId = (idRows[i]?.[0] ?? "").toString().trim();
+//       if (!name && !phone && !existingId) continue; // 완전 빈 줄은 스킵
+//       inputs.push({ rowIndex, name, phone, existingId });
+//     }
+
+//     // 2) 내 서버의 /api/customer/info 호출 준비
+//     const url = new URL(req.url);
+//     const origin = `${url.protocol}//${url.host}`;
+
+//     // 동시 실행 태스크(함수) 배열
+//     const tasks: Array<() => Promise<RowOutput>> = inputs.map(member => {
+//       return async () => {
+//         let memberId = "";
+//         let isRegisteredEmoji: "⭕" | "❌" = "❌";
+//         let gradeNoCell: number | "" = "";
+//         let joinDateCell = "";
+//         let orders3mCell: number | "" = "";
+//         let hadError = false;
+
+//         // 1순위: AC에 기존 ID가 있으면 그걸로 조회
+//         let queryUserId = member.existingId || "";
+//         // 없으면 2순위: 연락처 정규화 → 휴대폰으로 조회
+//         if (!queryUserId) {
+//           const normalized = normalizeKoreanCellphone(member.phone);
+//           if (!normalized) {
+//             // 조회 불가
+//             hadError = true;
+//             return {
+//               rowIndex: member.rowIndex,
+//               memberId,
+//               isRegisteredEmoji,
+//               gradeNoCell,
+//               joinDateCell,
+//               orders3mCell,
+//               hadError,
+//             };
+//           }
+//           queryUserId = normalized;
+//         }
+
+//         try {
+//           const infoUrl =
+//             `${origin}/api/customer/info?` +
+//             new URLSearchParams({
+//               user_id: queryUserId,
+//               period: "3months",
+//               shop_no: String(shopNoNum),
+//               guess: "1", // 숫자-only일 때 @k/@n 후보도 시도
+//             }).toString();
+
+//           const resp = await fetch(infoUrl, { method: "GET" });
+
+//           if (!resp.ok) {
+//             if (resp.status === 404) {
+//               isRegisteredEmoji = "❌";
+//             } else {
+//               hadError = true;
+//             }
+//           } else {
+//             const payload: InfoSuccess | InfoError = await resp.json();
+//             if (isInfoError(payload)) {
+//               hadError = true;
+//             } else {
+//               // 성공
+//               memberId = payload.memberId ?? "";
+//               isRegisteredEmoji = "⭕";
+
+//               // 등급번호: 우선 memberGradeNo, 없으면 memberGrade 문자열에서 첫 숫자 추출
+//               if (typeof payload.memberGradeNo === "number") {
+//                 gradeNoCell = payload.memberGradeNo;
+//               } else {
+//                 const n = firstNumberIn(payload.memberGrade);
+//                 gradeNoCell = typeof n === "number" && Number.isFinite(n) ? n : "";
+//               }
+
+//               joinDateCell = toDateCell(payload.joinDate);
+//               orders3mCell = typeof payload.totalOrders === "number" ? payload.totalOrders : 0;
+//             }
+//           }
+//         } catch {
+//           hadError = true;
+//         }
+
+//         // 너무 빡세면 살짝 쉬어주자(추가 보호)
+//         await sleep(120);
+
+//         return {
+//           rowIndex: member.rowIndex,
+//           memberId,
+//           isRegisteredEmoji,
+//           gradeNoCell,
+//           joinDateCell,
+//           orders3mCell,
+//           hadError,
+//         };
+//       };
+//     });
+
+//     // 동시 실행 (concurrency 제한, 타입 명시)
+//     const outputs = await runPool<RowOutput>(tasks, concurrency);
+
+//     // 3) 시트에 쓰기 (AC~AG)
+//     const lastRow = inputs.length > 0 ? inputs[inputs.length - 1].rowIndex : endRow;
+//     const rowsMatrix: (string | number)[][] = Array.from({ length: Math.max(0, lastRow - startRow + 1) }, () => [
+//       "",
+//       "",
+//       "",
+//       "",
+//       "",
+//     ]);
+
+//     for (const r of outputs) {
+//       const idx = r.rowIndex - startRow; // 0-based
+//       if (idx < 0 || idx >= rowsMatrix.length) continue;
+//       rowsMatrix[idx] = [
+//         r.memberId, // AC
+//         r.isRegisteredEmoji, // AD
+//         r.gradeNoCell, // AE (number | "")
+//         r.joinDateCell, // AF
+//         r.orders3mCell, // AG (number | "")
+//       ];
+//     }
+
+//     // 빈 매트릭스면 range 업데이트 스킵(역전 방지)
+//     if (rowsMatrix.length > 0) {
+//       await sheets.spreadsheets.values.update({
+//         spreadsheetId,
+//         range: `${targetSheet}!AC${startRow}:AG${startRow + rowsMatrix.length - 1}`,
+//         valueInputOption: "RAW",
+//         requestBody: { values: rowsMatrix },
+//       });
+//     }
+
+//     // 4) 통계 & nextStartRow
+//     const stats = {
+//       total: outputs.length,
+//       registered: outputs.filter(o => o.isRegisteredEmoji === "⭕").length,
+//       unregistered: outputs.filter(o => o.isRegisteredEmoji === "❌" && !o.hadError).length,
+//       errors: outputs.filter(o => o.hadError).length,
+//     };
+
+//     // 다음 배치 시작 지점 (이번 블록이 유의미하면 다음으로 전진)
+//     const processedAny = inputs.length > 0;
+//     const nextStartRow = processedAny ? endRow + 1 : null;
+
+//     return NextResponse.json({
+//       success: true,
+//       message: `${outputs.length}행 처리 완료 (AC~AG 반영)`,
+//       statistics: stats,
+//       nextStartRow,
+//       processedRange: rowsMatrix.length > 0 ? { startRow, endRow: startRow + rowsMatrix.length - 1 } : undefined,
+//       used: { limit, concurrency },
+//     });
+//   } catch (error) {
+//     return NextResponse.json(
+//       { error: "작업에 실패했습니다", details: error instanceof Error ? error.message : String(error) },
+//       { status: 500 },
+//     );
+//   }
+// }
 // src/app/api/sheets/verify-members/start/route.ts
 import { NextResponse } from "next/server";
 import { google } from "googleapis";
@@ -18,22 +355,20 @@ type GoogleCredentials = {
 };
 
 type InfoSuccess = {
-  userId?: string;
-  userName?: string;
   memberId: string;
-  memberGrade?: string; // 예: "VIP 3"
-  memberGradeNo?: number; // 숫자
-  joinDate?: string; // ISO or 'YYYY-MM-DD ...'
-  totalOrders: number; // 최근 3개월 주문 건수
+  memberGrade?: string;
+  memberGradeNo?: number; // 숫자!
+  joinDate?: string;
+  totalOrders: number; // 최근 3개월
 };
 
 type InfoError = { error: string; details?: unknown };
 
 type RowInput = {
-  rowIndex: number; // 시트 실제 행 번호(1-based)
+  rowIndex: number;
   name: string;
   phone: string;
-  existingId: string; // AC열 값(있으면 ID로 우선 조회)
+  existingId: string; // AC
 };
 
 type RowOutput = {
@@ -72,18 +407,11 @@ const toDateCell = (v?: string): string => {
 
 const isInfoError = (v: unknown): v is InfoError => typeof v === "object" && v !== null && "error" in v;
 
-const firstNumberIn = (s?: string): number | undefined => {
-  if (!s) return undefined;
-  const m = s.match(/\d+/);
-  return m ? Number(m[0]) : undefined;
-};
-
 /** ========= Simple promise pool ========= **/
 
 async function runPool<T>(tasks: Array<() => Promise<T>>, concurrency: number): Promise<T[]> {
   const results: T[] = [];
   let i = 0;
-
   async function worker() {
     while (i < tasks.length) {
       const my = i++;
@@ -91,7 +419,6 @@ async function runPool<T>(tasks: Array<() => Promise<T>>, concurrency: number): 
       results[my] = out;
     }
   }
-
   const n = Math.max(1, Math.min(concurrency, tasks.length));
   await Promise.all(Array.from({ length: n }, () => worker()));
   return results;
@@ -118,7 +445,7 @@ export async function POST(req: Request) {
 
     const targetSheet = (sheetName || "").trim() || "Sheet1";
     const shopNoNum = Number.isInteger(Number(shopNo)) ? Number(shopNo) : 1;
-    const startRow = Number.isInteger(Number(startRowRaw)) ? Number(startRowRaw) : 2; // 헤더 다음
+    const startRow = Number.isInteger(Number(startRowRaw)) ? Number(startRowRaw) : 2; // 2 = 헤더 다음
     const limit = Math.max(1, Math.min(Number(limitRaw ?? 100), 200));
     const concurrency = Math.max(1, Math.min(Number(concurrencyRaw ?? 2), 5));
 
@@ -143,10 +470,10 @@ export async function POST(req: Request) {
     });
     const sheets = google.sheets({ version: "v4", auth });
 
-    // 읽기 범위 계산
+    // 읽을 범위
     const endRow = startRow + limit - 1;
 
-    // 1) 입력 데이터(I:J) + 기존 ID(AC) 함께 읽기
+    // 1) 입력(I:J) + 기존 ID(AC) 읽기
     const [inRes, idRes] = await Promise.all([
       sheets.spreadsheets.values.get({ spreadsheetId, range: `${targetSheet}!I${startRow}:J${endRow}` }),
       sheets.spreadsheets.values.get({ spreadsheetId, range: `${targetSheet}!AC${startRow}:AC${endRow}` }),
@@ -155,7 +482,7 @@ export async function POST(req: Request) {
     const inRows = inRes.data.values ?? [];
     const idRows = idRes.data.values ?? [];
 
-    // 모두 공백이면 작업 종료
+    // 전부 빈 줄이면 종료
     const allEmpty =
       inRows.every(r => !(r?.[0] ?? "").toString().trim() && !(r?.[1] ?? "").toString().trim()) &&
       idRows.every(r => !(r?.[0] ?? "").toString().trim());
@@ -169,23 +496,23 @@ export async function POST(req: Request) {
       });
     }
 
-    // RowInput 만들기
+    // RowInput 구성
     const inputs: RowInput[] = [];
     for (let i = 0; i < Math.max(inRows.length, idRows.length); i++) {
       const rowIndex = startRow + i;
       const name = (inRows[i]?.[0] ?? "").toString().trim();
       const phone = (inRows[i]?.[1] ?? "").toString().trim();
       const existingId = (idRows[i]?.[0] ?? "").toString().trim();
-      if (!name && !phone && !existingId) continue; // 완전 빈 줄은 스킵
+      if (!name && !phone && !existingId) continue;
       inputs.push({ rowIndex, name, phone, existingId });
     }
 
-    // 2) 내 서버의 /api/customer/info 호출 준비
-    const url = new URL(req.url);
-    const origin = `${url.protocol}//${url.host}`;
+    // 2) 내 서버 /api/customer/info 호출 준비
+    const reqUrl = new URL(req.url);
+    const origin = `${reqUrl.protocol}//${reqUrl.host}`;
 
-    // 동시 실행 태스크(함수) 배열
-    const tasks: Array<() => Promise<RowOutput>> = inputs.map(member => {
+    // 각 행 처리 (아이디 → 404면 휴대폰 fallback)
+    const tasks = inputs.map<() => Promise<RowOutput>>(member => {
       return async () => {
         let memberId = "";
         let isRegisteredEmoji: "⭕" | "❌" = "❌";
@@ -194,72 +521,69 @@ export async function POST(req: Request) {
         let orders3mCell: number | "" = "";
         let hadError = false;
 
-        // 1순위: AC에 기존 ID가 있으면 그걸로 조회
-        let queryUserId = member.existingId || "";
-        // 없으면 2순위: 연락처 정규화 → 휴대폰으로 조회
-        if (!queryUserId) {
-          const normalized = normalizeKoreanCellphone(member.phone);
-          if (!normalized) {
-            // 조회 불가
-            hadError = true;
-            return {
-              rowIndex: member.rowIndex,
-              memberId,
-              isRegisteredEmoji,
-              gradeNoCell,
-              joinDateCell,
-              orders3mCell,
-              hadError,
-            };
-          }
-          queryUserId = normalized;
-        }
+        // 후보: 1) AC의 기존 ID  2) 연락처 정규화
+        const candidates: string[] = [];
+        if (member.existingId) candidates.push(member.existingId);
 
-        try {
-          const infoUrl =
-            `${origin}/api/customer/info?` +
-            new URLSearchParams({
-              user_id: queryUserId,
-              period: "3months",
-              shop_no: String(shopNoNum),
-              guess: "1", // 숫자-only일 때 @k/@n 후보도 시도
-            }).toString();
+        const normalized = normalizeKoreanCellphone(member.phone);
+        if (normalized) candidates.push(normalized);
 
-          const resp = await fetch(infoUrl, { method: "GET" });
-
-          if (!resp.ok) {
-            if (resp.status === 404) {
-              isRegisteredEmoji = "❌";
-            } else {
-              hadError = true;
-            }
-          } else {
-            const payload: InfoSuccess | InfoError = await resp.json();
-            if (isInfoError(payload)) {
-              hadError = true;
-            } else {
-              // 성공
-              memberId = payload.memberId ?? "";
-              isRegisteredEmoji = "⭕";
-
-              // 등급번호: 우선 memberGradeNo, 없으면 memberGrade 문자열에서 첫 숫자 추출
-              if (typeof payload.memberGradeNo === "number") {
-                gradeNoCell = payload.memberGradeNo;
-              } else {
-                const n = firstNumberIn(payload.memberGrade);
-                gradeNoCell = typeof n === "number" && Number.isFinite(n) ? n : "";
-              }
-
-              joinDateCell = toDateCell(payload.joinDate);
-              orders3mCell = typeof payload.totalOrders === "number" ? payload.totalOrders : 0;
-            }
-          }
-        } catch {
+        if (candidates.length === 0) {
           hadError = true;
+          return {
+            rowIndex: member.rowIndex,
+            memberId,
+            isRegisteredEmoji,
+            gradeNoCell,
+            joinDateCell,
+            orders3mCell,
+            hadError,
+          };
         }
 
-        // 너무 빡세면 살짝 쉬어주자(추가 보호)
-        await sleep(120);
+        for (let i = 0; i < candidates.length; i++) {
+          const q = candidates[i];
+          try {
+            const infoUrl =
+              `${origin}/api/customer/info?` +
+              new URLSearchParams({
+                user_id: q,
+                period: "3months",
+                shop_no: String(shopNoNum),
+                guess: "1",
+              }).toString();
+
+            const resp = await fetch(infoUrl, { method: "GET" });
+
+            if (resp.ok) {
+              const payload: InfoSuccess | InfoError = await resp.json();
+              if (isInfoError(payload)) {
+                hadError = true;
+              } else {
+                memberId = payload.memberId ?? "";
+                isRegisteredEmoji = "⭕";
+                gradeNoCell = typeof payload.memberGradeNo === "number" ? payload.memberGradeNo : "";
+                joinDateCell = toDateCell(payload.joinDate);
+                orders3mCell = typeof payload.totalOrders === "number" ? payload.totalOrders : 0;
+              }
+              break; // 성공했으니 후보 루프 종료
+            } else if (resp.status === 404) {
+              if (i === candidates.length - 1) {
+                isRegisteredEmoji = "❌"; // 마지막 후보까지 404면 미가입
+              }
+              continue; // 다음 후보로
+            } else {
+              hadError = true; // 4xx(404 제외) 또는 5xx
+              break;
+            }
+          } catch {
+            hadError = true;
+            break;
+          } finally {
+            // 호출 간 소폭 쉼 (추가 보호)
+            await sleep(120);
+          }
+        }
 
         return {
           rowIndex: member.rowIndex,
@@ -273,10 +597,10 @@ export async function POST(req: Request) {
       };
     });
 
-    // 동시 실행 (concurrency 제한, 타입 명시)
-    const outputs = await runPool<RowOutput>(tasks, concurrency);
+    // 동시 실행
+    const outputs = await runPool(tasks, concurrency);
 
-    // 3) 시트에 쓰기 (AC~AG)
+    // 3) 시트 쓰기 (AC~AG)
     const lastRow = inputs.length > 0 ? inputs[inputs.length - 1].rowIndex : endRow;
     const rowsMatrix: (string | number)[][] = Array.from({ length: Math.max(0, lastRow - startRow + 1) }, () => [
       "",
@@ -298,15 +622,12 @@ export async function POST(req: Request) {
       ];
     }
 
-    // 빈 매트릭스면 range 업데이트 스킵(역전 방지)
-    if (rowsMatrix.length > 0) {
-      await sheets.spreadsheets.values.update({
-        spreadsheetId,
-        range: `${targetSheet}!AC${startRow}:AG${startRow + rowsMatrix.length - 1}`,
-        valueInputOption: "RAW",
-        requestBody: { values: rowsMatrix },
-      });
-    }
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `${targetSheet}!AC${startRow}:AG${startRow + rowsMatrix.length - 1}`,
+      valueInputOption: "RAW",
+      requestBody: { values: rowsMatrix },
+    });
 
     // 4) 통계 & nextStartRow
     const stats = {
@@ -316,7 +637,6 @@ export async function POST(req: Request) {
       errors: outputs.filter(o => o.hadError).length,
     };
 
-    // 다음 배치 시작 지점 (이번 블록이 유의미하면 다음으로 전진)
     const processedAny = inputs.length > 0;
     const nextStartRow = processedAny ? endRow + 1 : null;
 
@@ -325,7 +645,7 @@ export async function POST(req: Request) {
       message: `${outputs.length}행 처리 완료 (AC~AG 반영)`,
       statistics: stats,
       nextStartRow,
-      processedRange: rowsMatrix.length > 0 ? { startRow, endRow: startRow + rowsMatrix.length - 1 } : undefined,
+      processedRange: { startRow, endRow: startRow + rowsMatrix.length - 1 },
       used: { limit, concurrency },
     });
   } catch (error) {
