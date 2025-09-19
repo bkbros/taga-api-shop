@@ -680,7 +680,6 @@ export async function GET(req: Request) {
 
     return NextResponse.json(body);
   } catch (error) {
-    const ms = Date.now() - (Number.NaN as any);
     console.error(`[ERROR] info route failed`, error);
     if (axios.isAxiosError(error)) {
       const st = error.response?.status;
