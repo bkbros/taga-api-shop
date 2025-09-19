@@ -401,7 +401,6 @@
 //   }
 // }
 
-// src/app/api/customer/info/route.ts
 import { NextResponse } from "next/server";
 import axios, { AxiosError, AxiosResponse } from "axios";
 import { loadParams } from "@/lib/ssm";
@@ -418,7 +417,7 @@ type Customer = {
   phone?: string;
   last_login_date?: string;
   group?: { group_name?: string };
-  group_no?: number; // ★ 등급 번호가 여기에 올 수 있음(몰 설정에 따라)
+  group_no?: number; // ★ 등급 번호가 올 수 있음
 };
 
 type CustomersResponse = { customers: Customer[] };
@@ -480,6 +479,14 @@ function clampCafe24WindowKST(startKstDay: Date, capKstDay: Date): { s: Date; e:
 
 /** ===================== Helpers ===================== **/
 
+// 제로폭 공백/제어문자 제거 + 트림
+function sanitizeId(input: string): string {
+  return input
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function digitsFromText(s?: string): number | undefined {
   if (!s) return undefined;
   const m = s.match(/\d+/);
@@ -500,16 +507,16 @@ function normalizeKoreanCellphone(input: string): string | null {
 }
 
 function phoneVariants(cell: string): string[] {
-  // 010abcdefg <-> 8210abcdefg 두 가지를 모두 시도
+  // 010abcdefg <-> 8210abcdefg
   const out = new Set<string>();
   const d = cell.replace(/\D/g, "");
   if (!d) return [];
   if (d.startsWith("0")) {
     out.add(d);
-    if (d.startsWith("010")) out.add(`82${d.slice(1)}`); // 8210xxxx
+    if (d.startsWith("010")) out.add(`82${d.slice(1)}`);
   } else if (d.startsWith("82")) {
     out.add(d);
-    if (d.startsWith("8210")) out.add(`0${d.slice(2)}`); // 010xxxx
+    if (d.startsWith("8210")) out.add(`0${d.slice(2)}`);
   }
   return [...out];
 }
@@ -599,16 +606,15 @@ export async function GET(req: Request) {
 
   const startedAt = Date.now();
 
-  // 입력 정리
+  // 입력 정리 (제로폭/제어문자 제거)
   let raw: string;
   try {
-    raw = decodeURIComponent(userIdParam).trim();
+    raw = sanitizeId(decodeURIComponent(userIdParam));
   } catch {
     return NextResponse.json({ error: "Invalid user_id encoding" }, { status: 400 });
   }
-  console.log(`[DEBUG] Raw input: ${raw}`);
+  console.log(`[DEBUG] Raw input(sanitized): ${JSON.stringify(raw)}`);
 
-  const digits = raw.replace(/\D/g, "");
   const isPhoneLike = normalizeKoreanCellphone(raw) !== null;
   const isNumericOnly = /^\d+$/.test(raw);
 
@@ -624,76 +630,90 @@ export async function GET(req: Request) {
       "X-Cafe24-Api-Version": "2025-06-01",
     };
 
-    /** 1) Customers 조회: member_id / cellphone 전략 구성 (아이디 우선, 실패 시 휴대폰) **/
+    /** 1) Customers 조회 전략 구성 (아이디 우선 → 휴대폰) **/
     const strategies: Strategy[] = [];
 
     // 1순위: member_id
     if (!isPhoneLike) {
       if (isNumericOnly) {
         const candidates: string[] = guess ? [raw, `${raw}@k`, `${raw}@n`] : [raw];
-        let matched: string | undefined;
+        // 숫자-only인 경우에는 여기서 존재 여부 미리 확인해서 매칭된 것만 전략에 추가
         for (const cand of candidates) {
-          const r: AxiosResponse<CustomersResponse> = await withRetry(() =>
-            axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
-              params: { limit: 1, member_id: cand },
-              headers: authHeaders,
-              timeout: 10000,
-              validateStatus: () => true,
-            }),
-          );
-          if (r.status === 200 && r.data?.customers?.length > 0) {
-            matched = cand;
-            break;
-          }
-        }
-        if (matched) {
-          strategies.push({ name: "member_id", params: { limit: 1, member_id: matched } });
-          console.log(`[DEBUG] 숫자-only 매칭 성공: ${raw} -> ${matched}`);
+          strategies.push({ name: "member_id", params: { limit: 1, member_id: cand } });
         }
       } else {
         strategies.push({ name: "member_id", params: { limit: 1, member_id: raw } });
       }
     }
 
-    // 2순위: cellphone (010…, 8210… 변형 모두 시도)
+    // 2순위: cellphone (010…, 8210…)
     if (isPhoneLike || strategies.length === 0) {
-      const norm = normalizeKoreanCellphone(raw) ?? digits;
-      const candPhones = phoneVariants(norm);
-      for (const ph of candPhones) {
-        strategies.push({ name: "cellphone", params: { limit: 1, cellphone: ph } });
+      const norm = normalizeKoreanCellphone(raw);
+      if (norm) {
+        for (const ph of phoneVariants(norm)) {
+          strategies.push({ name: "cellphone", params: { limit: 1, cellphone: ph } });
+        }
       }
     }
 
-    // 실제 조회
+    // 실제 조회: 각 전략별로 ① shop_no 포함 → 결과 없으면 ② shop_no 없이 재시도
     let foundBy: Strategy["name"] | undefined;
     let memberLoginId: string | undefined;
     let foundCustomer: Customer | undefined;
 
     for (const st of strategies) {
+      // ① shop_no 포함
       try {
-        const r: AxiosResponse<CustomersResponse> = await withRetry(() =>
+        const r1: AxiosResponse<CustomersResponse> = await withRetry(() =>
           axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
-            params: st.params,
+            params: { ...st.params, shop_no: shopNo },
             headers: authHeaders,
             timeout: 10000,
           }),
         );
-        const list = r.data?.customers ?? [];
-        if (list.length > 0) {
-          const c = list[0];
+        if (r1.data?.customers?.length) {
+          const c = r1.data.customers[0];
           const loginId = c.member_id || c.user_id;
-          if (!loginId) {
-            continue;
+          if (loginId) {
+            foundBy = st.name;
+            memberLoginId = loginId;
+            foundCustomer = c;
+            console.log(`[CUSTOMERS API] by=${st.name} (with shop_no=${shopNo}) hit: ${memberLoginId}`);
+            break;
           }
-          foundBy = st.name;
-          memberLoginId = loginId;
-          foundCustomer = c;
-          console.log(`[CUSTOMERS API] 고객 발견: by=${foundBy}, member_id=${memberLoginId}`);
-          break;
+        } else {
+          console.log(`[CUSTOMERS API] by=${st.name} (with shop_no) no results -> retry without shop_no`);
         }
       } catch (e) {
         const ax = e as AxiosError;
-        console.log(`[CUSTOMERS API] ${st.name} 실패`, ax.response?.status, ax.response?.data);
+        console.log(`[CUSTOMERS API] by=${st.name} with shop_no failed`, ax.response?.status, ax.response?.data);
+      }
+
+      // ② shop_no 없이 재시도
+      try {
+        const r2: AxiosResponse<CustomersResponse> = await withRetry(() =>
+          axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
+            params: { ...st.params }, // no shop_no
+            headers: authHeaders,
+            timeout: 10000,
+          }),
+        );
+        if (r2.data?.customers?.length) {
+          const c = r2.data.customers[0];
+          const loginId = c.member_id || c.user_id;
+          if (loginId) {
+            foundBy = st.name;
+            memberLoginId = loginId;
+            foundCustomer = c;
+            console.log(`[CUSTOMERS API] by=${st.name} (without shop_no) hit: ${memberLoginId}`);
+            break;
+          }
+        } else {
+          console.log(`[CUSTOMERS API] by=${st.name} (without shop_no) no results`);
+        }
+      } catch (e) {
+        const ax = e as AxiosError;
+        console.log(`[CUSTOMERS API] by=${st.name} without shop_no failed`, ax.response?.status, ax.response?.data);
       }
     }
 
@@ -708,11 +728,9 @@ export async function GET(req: Request) {
       );
     }
 
-    /** 2) Orders(최근 3개월) 카운트 (KST 기준 3개월 윈도우 엄수) **/
+    /** 2) Orders(최근 3개월) 카운트 (KST) **/
     const now = new Date();
-    const nowKst = now;
-    const threeMonthsAgoKst = addMonthsKST(nowKst, -3);
-    const { s, e } = clampCafe24WindowKST(threeMonthsAgoKst, nowKst);
+    const { s, e } = clampCafe24WindowKST(addMonthsKST(now, -3), now);
     const startStr = fmtKST(s);
     const endStr = fmtKST(e);
 
@@ -731,7 +749,7 @@ export async function GET(req: Request) {
     );
     const totalOrders = countRes.data?.count ?? 0;
 
-    // 등급 번호 추출: group_no 우선, 없으면 등급명에서 숫자 추출
+    // 등급 번호 추출: group_no 우선, 없으면 등급명에서 숫자 파싱
     const memberGradeNo =
       typeof foundCustomer.group_no === "number"
         ? foundCustomer.group_no
@@ -757,8 +775,8 @@ export async function GET(req: Request) {
     });
   } catch (error) {
     const ax = error as AxiosError;
-    const processingTime = Date.now() - startedAt;
     const status = ax.response?.status;
+    const processingTime = 0; // 시작 시각 로컬에서만 쓰이므로 0으로
 
     if (status === 401) {
       return NextResponse.json({ error: "Unauthorized - token may be expired", processingTime }, { status: 401 });
