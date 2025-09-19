@@ -142,30 +142,57 @@ class RateLimiter {
   }
 }
 
-const limiter = new RateLimiter(3, 200);
+const rateLimiter = new RateLimiter(1, 400);
 
-async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, baseDelay = 1000): Promise<T> {
-  let lastErr: unknown;
-  for (let i = 0; i <= maxRetries; i++) {
+// (B) withRetry에서 429 지수백오프 + 지터 강화
+async function withRetry<T>(fn: () => Promise<T>, maxRetries = 4, baseDelay = 1200): Promise<T> {
+  let last: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      return await limiter.execute(fn);
-    } catch (e) {
-      lastErr = e;
-      if (axios.isAxiosError(e)) {
-        const st = e.response?.status ?? 0;
-        if (st === 429 || st >= 500) {
-          if (i < maxRetries) {
-            const delay = baseDelay * Math.pow(2, i);
+      return await rateLimiter.execute(fn);
+    } catch (err) {
+      last = err;
+      if (axios.isAxiosError(err)) {
+        const status = err.response?.status;
+        if (status === 429 || (status && status >= 500)) {
+          if (attempt < maxRetries) {
+            // Retry-After 헤더 있으면 우선 사용
+            const ra = (err.response?.headers as Record<string, string> | undefined)?.["retry-after"];
+            let delay = ra ? Number(ra) * 1000 : baseDelay * Math.pow(2, attempt);
+            delay += Math.floor(Math.random() * 400); // 지터
             await new Promise(r => setTimeout(r, delay));
             continue;
           }
         }
       }
-      break;
+      if (attempt === maxRetries) throw last;
     }
   }
-  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  throw last as Error;
 }
+// const limiter = new RateLimiter(3, 200);
+// async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, baseDelay = 1000): Promise<T> {
+//   let lastErr: unknown;
+//   for (let i = 0; i <= maxRetries; i++) {
+//     try {
+//       return await limiter.execute(fn);
+//     } catch (e) {
+//       lastErr = e;
+//       if (axios.isAxiosError(e)) {
+//         const st = e.response?.status ?? 0;
+//         if (st === 429 || st >= 500) {
+//           if (i < maxRetries) {
+//             const delay = baseDelay * Math.pow(2, i);
+//             await new Promise(r => setTimeout(r, delay));
+//             continue;
+//           }
+//         }
+//       }
+//       break;
+//     }
+//   }
+//   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+// }
 
 /** ===================== Handler ===================== **/
 
