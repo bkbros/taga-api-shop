@@ -251,7 +251,7 @@
 
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState, type ChangeEvent } from "react";
 
 type VerificationStats = {
   total: number;
@@ -272,7 +272,6 @@ type BatchResponse = {
 export default function SheetsVerification() {
   // UI 상태
   const [loading, setLoading] = useState(false);
-  const [cancelled, setCancelled] = useState(false);
   const cancelRef = useRef(false);
 
   const [error, setError] = useState<string | null>(null);
@@ -309,7 +308,6 @@ export default function SheetsVerification() {
 
   const resetAll = useCallback(() => {
     setLoading(false);
-    setCancelled(false);
     cancelRef.current = false;
     setError(null);
     setLogs([]);
@@ -318,7 +316,6 @@ export default function SheetsVerification() {
   }, []);
 
   const handleCancel = useCallback(() => {
-    setCancelled(true);
     cancelRef.current = true;
     addLog("사용자 취소 요청됨. 현재 배치가 끝나면 중단합니다.");
   }, [addLog]);
@@ -347,7 +344,7 @@ export default function SheetsVerification() {
           const j = JSON.parse(text);
           msg = j.error || msg;
         } catch {
-          // noop
+          /* noop */
         }
         throw new Error(msg);
       }
@@ -371,7 +368,6 @@ export default function SheetsVerification() {
 
     // 초기화
     setError(null);
-    setCancelled(false);
     cancelRef.current = false;
     setLoading(true);
     setLogs([]);
@@ -382,10 +378,6 @@ export default function SheetsVerification() {
 
     let cursor = startRow;
     try {
-      // 루프: nextStartRow가 null이면 종료
-      // 사용자가 취소하면 중단
-      // 배치별 결과를 누적
-      // (서버에서 레이트리밋 및 분할을 이미 처리)
       while (true) {
         if (cancelRef.current) break;
 
@@ -406,22 +398,16 @@ export default function SheetsVerification() {
           errors: prev.errors + (batch.statistics?.errors ?? 0),
         }));
 
-        // 다음 배치 시작 지점
         if (batch.nextStartRow == null) {
           addLog("더 이상 처리할 행이 없습니다. 종료합니다.");
           break;
         } else {
           cursor = batch.nextStartRow;
-          // 살짝 대기(시트 쓰기 전파 여유 & API 보호)
-          await new Promise(r => setTimeout(r, 250));
+          await new Promise(r => setTimeout(r, 250)); // API 보호용 소폭 대기
         }
       }
 
-      if (cancelRef.current) {
-        addLog("사용자 취소로 중단되었습니다.");
-      } else {
-        addLog("모든 배치 처리가 완료되었습니다.");
-      }
+      addLog(cancelRef.current ? "사용자 취소로 중단되었습니다." : "모든 배치 처리가 완료되었습니다.");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
@@ -430,6 +416,17 @@ export default function SheetsVerification() {
       setLoading(false);
     }
   }, [addLog, runOneBatch, startRow, limit, concurrency, shopNo, spreadsheetId, useEnvCredentials, serviceAccountKey]);
+
+  // 숫자 입력 헬퍼(빈값/NaN 방지)
+  const onNumberChange =
+    (setter: (n: number) => void, fallback: number, min?: number, max?: number) =>
+    (e: ChangeEvent<HTMLInputElement>) => {
+      let n = Number(e.currentTarget.value);
+      if (!Number.isFinite(n)) n = fallback;
+      if (min !== undefined) n = Math.max(min, n);
+      if (max !== undefined) n = Math.min(max, n);
+      setter(n);
+    };
 
   return (
     <div className="max-w-4xl mx-auto p-6 bg-white rounded-lg shadow-lg">
@@ -469,7 +466,7 @@ export default function SheetsVerification() {
             <input
               type="number"
               value={shopNo}
-              onChange={e => setShopNo(Number(e.target.value || 1))}
+              onChange={onNumberChange(setShopNo, 1, 1)}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
               min={1}
             />
@@ -513,7 +510,7 @@ export default function SheetsVerification() {
             <input
               type="number"
               value={startRow}
-              onChange={e => setStartRow(Number(e.target.value || 2))}
+              onChange={onNumberChange(setStartRow, 2, 2)}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
               min={2}
             />
@@ -525,7 +522,7 @@ export default function SheetsVerification() {
             <input
               type="number"
               value={limit}
-              onChange={e => setLimit(Number(e.target.value || 100))}
+              onChange={onNumberChange(setLimit, 100, 1, 200)}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
               min={1}
               max={200}
@@ -538,7 +535,7 @@ export default function SheetsVerification() {
             <input
               type="number"
               value={concurrency}
-              onChange={e => setConcurrency(Number(e.target.value || 2))}
+              onChange={onNumberChange(setConcurrency, 2, 1, 5)}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
               min={1}
               max={5}
