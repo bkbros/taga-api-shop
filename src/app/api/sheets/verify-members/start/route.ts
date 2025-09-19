@@ -293,11 +293,9 @@ import { google } from "googleapis";
 
 /** ====== Vercel 실행 환경 힌트 ====== **/
 export const runtime = "nodejs";
-// 플랜이 허용하면 60초까지. (소프트 타임아웃은 별도로 45초 기본 적용)
 export const maxDuration = 60;
 
 /** ========= Types ========= **/
-
 type GoogleCredentials = {
   type: string;
   project_id: string;
@@ -319,15 +317,14 @@ interface SheetMemberRow {
 
 type SearchMethod = "cellphone" | "member_id";
 
-// /api/customer/info 성공 응답(우리 라우트 기준)
 interface InfoSuccess {
   userId?: string;
   userName?: string;
   memberId: string;
-  memberGrade?: string; // 등급명(백업용)
-  memberGradeNo?: number; // 등급번호 (숫자) ← 이 값을 AE에 씀
-  joinDate?: string; // ISO or YYYY-MM-DD
-  totalOrders: number; // 최근 3개월 주문 건수
+  memberGrade?: string;
+  memberGradeNo?: number;
+  joinDate?: string;
+  totalOrders: number;
   period?: "3months" | "1year";
   shopNo?: number;
   searchMethod?: SearchMethod;
@@ -343,15 +340,14 @@ type RowResult = {
   rowIndex: number;
   memberId: string;
   isRegisteredEmoji: "⭕" | "❌";
-  memberGradeNoCell: number | ""; // AE (숫자 셀)
-  joinDateCell: string; // AF (YYYY-MM-DD)
-  orders3mCell: number | ""; // AG (숫자 셀)
+  memberGradeNoCell: number | "";
+  joinDateCell: string;
+  orders3mCell: number | "";
   hadError: boolean;
-  attempted: boolean; // 이 행을 실제 조회 시도했는지
+  attempted: boolean;
 };
 
 /** ========= Utils ========= **/
-
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 const toDateCell = (v?: string): string => {
@@ -364,7 +360,6 @@ const toDateCell = (v?: string): string => {
 const isInfoError = (v: unknown): v is InfoError => typeof v === "object" && v !== null && "error" in v;
 
 /** ========= Body 타입 ========= **/
-
 interface StartBody {
   spreadsheetId: string;
   sheetName?: string;
@@ -372,14 +367,12 @@ interface StartBody {
   serviceAccountKey?: string;
   shopNo?: number;
   startRow?: number; // 기본 2
-  limit?: number; // 기본 100 (권장 80~120)
-  concurrency?: number; // 기본 2 (권장 2~3)
+  limit?: number; // 기본 100
+  concurrency?: number; // 기본 2
 }
 
 /** ========= 핸들러 ========= **/
-
 export async function POST(req: Request) {
-  // 소프트 타임아웃(기본 45초). 환경변수로 조절 가능.
   const SOFT_DEADLINE_MS = Number(process.env.START_SOFT_DEADLINE_MS ?? 45000);
   const startedAt = Date.now();
 
@@ -393,7 +386,6 @@ export async function POST(req: Request) {
 
     const targetSheet = (sheetName || "").trim() || "Sheet1";
     const shopNoNum = Number.isInteger(Number(shopNo)) ? Number(shopNo) : 1;
-
     const startRowNum = Number.isInteger(Number(startRow)) ? Math.max(2, Number(startRow)) : 2;
     const limitNum = Number.isInteger(Number(limit)) ? Math.min(Math.max(Number(limit), 1), 200) : 100;
     const concurrencyNum = Number.isInteger(Number(concurrency)) ? Math.min(Math.max(Number(concurrency), 1), 5) : 2;
@@ -431,7 +423,6 @@ export async function POST(req: Request) {
     const rowsLen = values.length;
 
     if (rowsLen === 0) {
-      // 이 배치에 더 읽을 데이터가 없음
       return NextResponse.json({
         success: true,
         message: "처리할 행이 없습니다.",
@@ -448,11 +439,11 @@ export async function POST(req: Request) {
       rowIndex: startRowNum + idx,
     }));
 
-    // 2) 내 서버의 /api/customer/info 호출 origin
+    // 2) /api/customer/info 호출 origin
     const url = new URL(req.url);
     const origin = `${url.protocol}//${url.host}`;
 
-    // 3) 결과 버퍼 (행수와 동일한 길이로 초기화)
+    // 3) 결과 버퍼
     const results: RowResult[] = Array.from({ length: rowsLen }, (_, i) => ({
       rowIndex: startRowNum + i,
       memberId: "",
@@ -469,7 +460,6 @@ export async function POST(req: Request) {
     let attemptedCount = 0;
 
     async function worker(): Promise<void> {
-      // 소프트 타임아웃에 걸리면 새 작업을 시작하지 않음
       while (cursor < batchMembers.length) {
         if (Date.now() - startedAt > SOFT_DEADLINE_MS) break;
 
@@ -479,11 +469,7 @@ export async function POST(req: Request) {
 
         const cleanPhone = row.phone.replace(/\D/g, "");
         const isPhone = /^0\d{9,10}$/.test(cleanPhone);
-
-        if (!isPhone) {
-          // 유효한 전화번호가 아니면 스킵(빈값 유지)하되, attempted=false
-          continue;
-        }
+        if (!isPhone) continue; // attempted=false 유지
 
         out.attempted = true;
         attemptedCount++;
@@ -492,7 +478,7 @@ export async function POST(req: Request) {
           const infoUrl =
             `${origin}/api/customer/info?` +
             new URLSearchParams({
-              user_id: cleanPhone, // info 라우트가 휴대폰/아이디 자동 판별+폴백 처리
+              user_id: cleanPhone,
               period: "3months",
               shop_no: String(shopNoNum),
               guess: "1",
@@ -502,7 +488,6 @@ export async function POST(req: Request) {
 
           if (!resp.ok) {
             if (resp.status === 404) {
-              // 미가입
               out.isRegisteredEmoji = "❌";
             } else {
               out.hadError = true;
@@ -512,7 +497,6 @@ export async function POST(req: Request) {
             if (isInfoError(payload)) {
               out.hadError = true;
             } else {
-              // 성공
               out.memberId = payload.memberId ?? "";
               out.isRegisteredEmoji = "⭕";
               out.memberGradeNoCell = typeof payload.memberGradeNo === "number" ? payload.memberGradeNo : "";
@@ -520,21 +504,20 @@ export async function POST(req: Request) {
               out.orders3mCell = typeof payload.totalOrders === "number" ? payload.totalOrders : 0;
             }
           }
-        } catch (e) {
+        } catch {
+          // ← 여기! e 변수 제거해서 ESLint 해결
           out.hadError = true;
         }
 
-        // API 보호 (info 내부도 rate-limit 있음 / 여기선 살짝 휴식)
         await sleep(150);
       }
     }
 
-    // 워커 실행
     const workers: Promise<void>[] = [];
     for (let i = 0; i < concurrencyNum; i++) workers.push(worker());
     await Promise.all(workers);
 
-    // 실제로 우리가 시도한(전화번호 유효했던) 건수만 통계에 반영
+    // 통계 (attempted=true만 집계)
     const stats = {
       total: attemptedCount,
       registered: results.filter(r => r.attempted && r.isRegisteredEmoji === "⭕").length,
@@ -542,14 +525,13 @@ export async function POST(req: Request) {
       errors: results.filter(r => r.attempted && r.hadError).length,
     };
 
-    // 4) 시트에 부분 저장 (이 배치에서 읽어온 행 수만큼)
-    // AC: 회원ID, AD: 가입여부(⭕/❌), AE: 등급번호(숫자), AF: 가입일, AG: 최근3개월 구매건수(숫자)
+    // 4) 시트에 부분 저장
     const writeMatrix: (string | number)[][] = results.map(r => [
-      r.memberId,
-      r.isRegisteredEmoji,
-      r.memberGradeNoCell,
-      r.joinDateCell,
-      r.orders3mCell,
+      r.memberId, // AC
+      r.isRegisteredEmoji, // AD
+      r.memberGradeNoCell, // AE (숫자)
+      r.joinDateCell, // AF
+      r.orders3mCell, // AG (숫자)
     ]);
 
     const writeStart = startRowNum;
@@ -563,11 +545,8 @@ export async function POST(req: Request) {
       requestBody: { values: writeMatrix },
     });
 
-    // 5) 다음 커서(배치) 계산
-    // - 구글이 돌려준 rows가 limit 미만이면 마지막 배치로 판단
-    // - 아니면 다음 시작 행은 startRow + limit
+    // 5) 다음 배치 커서
     const nextStartRow = rowsLen < limitNum ? null : startRowNum + limitNum;
-
     const elapsed = Date.now() - startedAt;
     const msg =
       rowsLen < limitNum
