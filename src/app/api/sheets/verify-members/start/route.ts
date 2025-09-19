@@ -291,11 +291,8 @@
 import { NextResponse } from "next/server";
 import { google } from "googleapis";
 
-/** ====== Vercel 실행 환경 힌트 ====== **/
-export const runtime = "nodejs";
-export const maxDuration = 60;
-
 /** ========= Types ========= **/
+
 type GoogleCredentials = {
   type: string;
   project_id: string;
@@ -309,45 +306,50 @@ type GoogleCredentials = {
   client_x509_cert_url: string;
 };
 
-interface SheetMemberRow {
-  name: string;
-  phone: string;
-  rowIndex: number; // 실제 시트의 1-based 로우
-}
-
-type SearchMethod = "cellphone" | "member_id";
-
-interface InfoSuccess {
+type InfoSuccess = {
   userId?: string;
   userName?: string;
   memberId: string;
-  memberGrade?: string;
-  memberGradeNo?: number;
-  joinDate?: string;
-  totalOrders: number;
-  period?: "3months" | "1year";
-  shopNo?: number;
-  searchMethod?: SearchMethod;
-  processingTime?: number;
-}
+  memberGrade?: string; // 예: "VIP 3"
+  memberGradeNo?: number; // 숫자
+  joinDate?: string; // ISO or 'YYYY-MM-DD ...'
+  totalOrders: number; // 최근 3개월 주문 건수
+};
 
-interface InfoError {
-  error: string;
-  details?: unknown;
-}
+type InfoError = { error: string; details?: unknown };
 
-type RowResult = {
+type RowInput = {
+  rowIndex: number; // 시트 실제 행 번호(1-based)
+  name: string;
+  phone: string;
+  existingId: string; // AC열 값(있으면 ID로 우선 조회)
+};
+
+type RowOutput = {
   rowIndex: number;
   memberId: string;
   isRegisteredEmoji: "⭕" | "❌";
-  memberGradeNoCell: number | "";
+  gradeNoCell: number | "";
   joinDateCell: string;
   orders3mCell: number | "";
   hadError: boolean;
-  attempted: boolean;
 };
 
 /** ========= Utils ========= **/
+
+function normalizeKoreanCellphone(input: string): string | null {
+  const digits = input.replace(/\D/g, "");
+  if (!digits) return null;
+  if (digits.startsWith("82")) {
+    const rest = digits.slice(2);
+    if (rest.startsWith("10")) return `0${rest}`;
+    if (rest.length >= 2 && rest[0] !== "0") return `0${rest}`;
+  }
+  if (digits.startsWith("10")) return `0${digits}`;
+  if (/^0\d{9,10}$/.test(digits)) return digits;
+  return null;
+}
+
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 const toDateCell = (v?: string): string => {
@@ -359,26 +361,45 @@ const toDateCell = (v?: string): string => {
 
 const isInfoError = (v: unknown): v is InfoError => typeof v === "object" && v !== null && "error" in v;
 
-/** ========= Body 타입 ========= **/
-interface StartBody {
-  spreadsheetId: string;
-  sheetName?: string;
-  useEnvCredentials?: boolean;
-  serviceAccountKey?: string;
-  shopNo?: number;
-  startRow?: number; // 기본 2
-  limit?: number; // 기본 100
-  concurrency?: number; // 기본 2
+const firstNumberIn = (s?: string): number | undefined => {
+  if (!s) return undefined;
+  const m = s.match(/\d+/);
+  return m ? Number(m[0]) : undefined;
+};
+
+/** ========= Simple promise pool ========= **/
+
+async function runPool<T>(tasks: Array<() => Promise<T>>, concurrency: number): Promise<T[]> {
+  const results: T[] = [];
+  let i = 0;
+
+  async function worker() {
+    while (i < tasks.length) {
+      const my = i++;
+      const out = await tasks[my]();
+      results[my] = out;
+    }
+  }
+
+  const n = Math.max(1, Math.min(concurrency, tasks.length));
+  await Promise.all(Array.from({ length: n }, () => worker()));
+  return results;
 }
 
-/** ========= 핸들러 ========= **/
-export async function POST(req: Request) {
-  const SOFT_DEADLINE_MS = Number(process.env.START_SOFT_DEADLINE_MS ?? 45000);
-  const startedAt = Date.now();
+/** ========= Handler ========= **/
 
+export async function POST(req: Request) {
   try {
-    const { spreadsheetId, sheetName, useEnvCredentials, serviceAccountKey, shopNo, startRow, limit, concurrency } =
-      (await req.json()) as StartBody;
+    const {
+      spreadsheetId,
+      sheetName,
+      useEnvCredentials,
+      serviceAccountKey,
+      shopNo,
+      startRow: startRowRaw,
+      limit: limitRaw,
+      concurrency: concurrencyRaw,
+    } = await req.json();
 
     if (!spreadsheetId) {
       return NextResponse.json({ error: "spreadsheetId가 필요합니다" }, { status: 400 });
@@ -386,13 +407,13 @@ export async function POST(req: Request) {
 
     const targetSheet = (sheetName || "").trim() || "Sheet1";
     const shopNoNum = Number.isInteger(Number(shopNo)) ? Number(shopNo) : 1;
-    const startRowNum = Number.isInteger(Number(startRow)) ? Math.max(2, Number(startRow)) : 2;
-    const limitNum = Number.isInteger(Number(limit)) ? Math.min(Math.max(Number(limit), 1), 200) : 100;
-    const concurrencyNum = Number.isInteger(Number(concurrency)) ? Math.min(Math.max(Number(concurrency), 1), 5) : 2;
+    const startRow = Number.isInteger(Number(startRowRaw)) ? Number(startRowRaw) : 2; // 헤더 다음
+    const limit = Math.max(1, Math.min(Number(limitRaw ?? 100), 200));
+    const concurrency = Math.max(1, Math.min(Number(concurrencyRaw ?? 2), 5));
 
     // Google 인증
     let credentials: GoogleCredentials;
-    if (useEnvCredentials ?? true) {
+    if (useEnvCredentials) {
       const googleCredJson = process.env.GOOGLE_CRED_JSON;
       if (!googleCredJson) {
         return NextResponse.json({ error: "환경변수 GOOGLE_CRED_JSON 이 설정되지 않았습니다" }, { status: 500 });
@@ -411,158 +432,195 @@ export async function POST(req: Request) {
     });
     const sheets = google.sheets({ version: "v4", auth });
 
-    // 1) 배치 범위 읽기: I(이름), J(연락처)
-    const endRow = startRowNum + limitNum - 1;
-    const readRange = `${targetSheet}!I${startRowNum}:J${endRow}`;
-    const sourceResponse = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: readRange,
-    });
+    // 읽기 범위 계산
+    const endRow = startRow + limit - 1;
 
-    const values = sourceResponse.data.values ?? [];
-    const rowsLen = values.length;
+    // 1) 입력 데이터(I:J) + 기존 ID(AC) 함께 읽기
+    const [inRes, idRes] = await Promise.all([
+      sheets.spreadsheets.values.get({ spreadsheetId, range: `${targetSheet}!I${startRow}:J${endRow}` }),
+      sheets.spreadsheets.values.get({ spreadsheetId, range: `${targetSheet}!AC${startRow}:AC${endRow}` }),
+    ]);
 
-    if (rowsLen === 0) {
+    const inRows = inRes.data.values ?? [];
+    const idRows = idRes.data.values ?? [];
+
+    // 모두 공백이면 작업 종료
+    const allEmpty =
+      inRows.every(r => !(r?.[0] ?? "").toString().trim() && !(r?.[1] ?? "").toString().trim()) &&
+      idRows.every(r => !(r?.[0] ?? "").toString().trim());
+    if (allEmpty) {
       return NextResponse.json({
         success: true,
-        message: "처리할 행이 없습니다.",
+        message: "더 이상 처리할 행이 없습니다.",
         statistics: { total: 0, registered: 0, unregistered: 0, errors: 0 },
         nextStartRow: null,
-        processedRange: { startRow: startRowNum, endRow: startRowNum - 1 },
-        used: { limit: limitNum, concurrency: concurrencyNum },
+        used: { limit, concurrency },
       });
     }
 
-    const batchMembers: SheetMemberRow[] = values.map((row, idx) => ({
-      name: (row?.[0] ?? "").toString().trim(),
-      phone: (row?.[1] ?? "").toString().trim(),
-      rowIndex: startRowNum + idx,
-    }));
+    // RowInput 만들기
+    const inputs: RowInput[] = [];
+    for (let i = 0; i < Math.max(inRows.length, idRows.length); i++) {
+      const rowIndex = startRow + i;
+      const name = (inRows[i]?.[0] ?? "").toString().trim();
+      const phone = (inRows[i]?.[1] ?? "").toString().trim();
+      const existingId = (idRows[i]?.[0] ?? "").toString().trim();
+      if (!name && !phone && !existingId) continue; // 완전 빈 줄은 스킵
+      inputs.push({ rowIndex, name, phone, existingId });
+    }
 
-    // 2) /api/customer/info 호출 origin
+    // 2) 내 서버의 /api/customer/info 호출 준비
     const url = new URL(req.url);
     const origin = `${url.protocol}//${url.host}`;
 
-    // 3) 결과 버퍼
-    const results: RowResult[] = Array.from({ length: rowsLen }, (_, i) => ({
-      rowIndex: startRowNum + i,
-      memberId: "",
-      isRegisteredEmoji: "❌",
-      memberGradeNoCell: "",
-      joinDateCell: "",
-      orders3mCell: "",
-      hadError: false,
-      attempted: false,
-    }));
+    // 동시 실행 태스크(함수) 배열
+    const tasks: Array<() => Promise<RowOutput>> = inputs.map(member => {
+      return async () => {
+        let memberId = "";
+        let isRegisteredEmoji: "⭕" | "❌" = "❌";
+        let gradeNoCell: number | "" = "";
+        let joinDateCell = "";
+        let orders3mCell: number | "" = "";
+        let hadError = false;
 
-    // 동시성 처리
-    let cursor = 0;
-    let attemptedCount = 0;
-
-    async function worker(): Promise<void> {
-      while (cursor < batchMembers.length) {
-        if (Date.now() - startedAt > SOFT_DEADLINE_MS) break;
-
-        const myIdx = cursor++;
-        const row = batchMembers[myIdx];
-        const out = results[myIdx];
-
-        const cleanPhone = row.phone.replace(/\D/g, "");
-        const isPhone = /^0\d{9,10}$/.test(cleanPhone);
-        if (!isPhone) continue; // attempted=false 유지
-
-        out.attempted = true;
-        attemptedCount++;
+        // 1순위: AC에 기존 ID가 있으면 그걸로 조회
+        let queryUserId = member.existingId || "";
+        // 없으면 2순위: 연락처 정규화 → 휴대폰으로 조회
+        if (!queryUserId) {
+          const normalized = normalizeKoreanCellphone(member.phone);
+          if (!normalized) {
+            // 조회 불가
+            hadError = true;
+            return {
+              rowIndex: member.rowIndex,
+              memberId,
+              isRegisteredEmoji,
+              gradeNoCell,
+              joinDateCell,
+              orders3mCell,
+              hadError,
+            };
+          }
+          queryUserId = normalized;
+        }
 
         try {
           const infoUrl =
             `${origin}/api/customer/info?` +
             new URLSearchParams({
-              user_id: cleanPhone,
+              user_id: queryUserId,
               period: "3months",
               shop_no: String(shopNoNum),
-              guess: "1",
+              guess: "1", // 숫자-only일 때 @k/@n 후보도 시도
             }).toString();
 
           const resp = await fetch(infoUrl, { method: "GET" });
 
           if (!resp.ok) {
             if (resp.status === 404) {
-              out.isRegisteredEmoji = "❌";
+              isRegisteredEmoji = "❌";
             } else {
-              out.hadError = true;
+              hadError = true;
             }
           } else {
-            const payload: InfoSuccess | InfoError = (await resp.json()) as InfoSuccess | InfoError;
+            const payload: InfoSuccess | InfoError = await resp.json();
             if (isInfoError(payload)) {
-              out.hadError = true;
+              hadError = true;
             } else {
-              out.memberId = payload.memberId ?? "";
-              out.isRegisteredEmoji = "⭕";
-              out.memberGradeNoCell = typeof payload.memberGradeNo === "number" ? payload.memberGradeNo : "";
-              out.joinDateCell = toDateCell(payload.joinDate);
-              out.orders3mCell = typeof payload.totalOrders === "number" ? payload.totalOrders : 0;
+              // 성공
+              memberId = payload.memberId ?? "";
+              isRegisteredEmoji = "⭕";
+
+              // 등급번호: 우선 memberGradeNo, 없으면 memberGrade 문자열에서 첫 숫자 추출
+              if (typeof payload.memberGradeNo === "number") {
+                gradeNoCell = payload.memberGradeNo;
+              } else {
+                const n = firstNumberIn(payload.memberGrade);
+                gradeNoCell = typeof n === "number" && Number.isFinite(n) ? n : "";
+              }
+
+              joinDateCell = toDateCell(payload.joinDate);
+              orders3mCell = typeof payload.totalOrders === "number" ? payload.totalOrders : 0;
             }
           }
         } catch {
-          // ← 여기! e 변수 제거해서 ESLint 해결
-          out.hadError = true;
+          hadError = true;
         }
 
-        await sleep(150);
-      }
-    }
+        // 너무 빡세면 살짝 쉬어주자(추가 보호)
+        await sleep(120);
 
-    const workers: Promise<void>[] = [];
-    for (let i = 0; i < concurrencyNum; i++) workers.push(worker());
-    await Promise.all(workers);
-
-    // 통계 (attempted=true만 집계)
-    const stats = {
-      total: attemptedCount,
-      registered: results.filter(r => r.attempted && r.isRegisteredEmoji === "⭕").length,
-      unregistered: results.filter(r => r.attempted && r.isRegisteredEmoji === "❌" && !r.hadError).length,
-      errors: results.filter(r => r.attempted && r.hadError).length,
-    };
-
-    // 4) 시트에 부분 저장
-    const writeMatrix: (string | number)[][] = results.map(r => [
-      r.memberId, // AC
-      r.isRegisteredEmoji, // AD
-      r.memberGradeNoCell, // AE (숫자)
-      r.joinDateCell, // AF
-      r.orders3mCell, // AG (숫자)
-    ]);
-
-    const writeStart = startRowNum;
-    const writeEnd = startRowNum + rowsLen - 1;
-    const writeRange = `${targetSheet}!AC${writeStart}:AG${writeEnd}`;
-
-    await sheets.spreadsheets.values.update({
-      spreadsheetId,
-      range: writeRange,
-      valueInputOption: "RAW",
-      requestBody: { values: writeMatrix },
+        return {
+          rowIndex: member.rowIndex,
+          memberId,
+          isRegisteredEmoji,
+          gradeNoCell,
+          joinDateCell,
+          orders3mCell,
+          hadError,
+        };
+      };
     });
 
-    // 5) 다음 배치 커서
-    const nextStartRow = rowsLen < limitNum ? null : startRowNum + limitNum;
-    const elapsed = Date.now() - startedAt;
-    const msg =
-      rowsLen < limitNum
-        ? `마지막 배치 처리 완료 (${attemptedCount}명 시도, ${elapsed}ms)`
-        : `배치 처리 완료 (${attemptedCount}명 시도, ${elapsed}ms)`;
+    // 동시 실행 (concurrency 제한, 타입 명시)
+    const outputs = await runPool<RowOutput>(tasks, concurrency);
+
+    // 3) 시트에 쓰기 (AC~AG)
+    const lastRow = inputs.length > 0 ? inputs[inputs.length - 1].rowIndex : endRow;
+    const rowsMatrix: (string | number)[][] = Array.from({ length: Math.max(0, lastRow - startRow + 1) }, () => [
+      "",
+      "",
+      "",
+      "",
+      "",
+    ]);
+
+    for (const r of outputs) {
+      const idx = r.rowIndex - startRow; // 0-based
+      if (idx < 0 || idx >= rowsMatrix.length) continue;
+      rowsMatrix[idx] = [
+        r.memberId, // AC
+        r.isRegisteredEmoji, // AD
+        r.gradeNoCell, // AE (number | "")
+        r.joinDateCell, // AF
+        r.orders3mCell, // AG (number | "")
+      ];
+    }
+
+    // 빈 매트릭스면 range 업데이트 스킵(역전 방지)
+    if (rowsMatrix.length > 0) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: `${targetSheet}!AC${startRow}:AG${startRow + rowsMatrix.length - 1}`,
+        valueInputOption: "RAW",
+        requestBody: { values: rowsMatrix },
+      });
+    }
+
+    // 4) 통계 & nextStartRow
+    const stats = {
+      total: outputs.length,
+      registered: outputs.filter(o => o.isRegisteredEmoji === "⭕").length,
+      unregistered: outputs.filter(o => o.isRegisteredEmoji === "❌" && !o.hadError).length,
+      errors: outputs.filter(o => o.hadError).length,
+    };
+
+    // 다음 배치 시작 지점 (이번 블록이 유의미하면 다음으로 전진)
+    const processedAny = inputs.length > 0;
+    const nextStartRow = processedAny ? endRow + 1 : null;
 
     return NextResponse.json({
       success: true,
-      message: msg,
+      message: `${outputs.length}행 처리 완료 (AC~AG 반영)`,
       statistics: stats,
       nextStartRow,
-      processedRange: { startRow: writeStart, endRow: writeEnd },
-      used: { limit: limitNum, concurrency: concurrencyNum },
+      processedRange: rowsMatrix.length > 0 ? { startRow, endRow: startRow + rowsMatrix.length - 1 } : undefined,
+      used: { limit, concurrency },
     });
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    return NextResponse.json({ error: "작업에 실패했습니다", details: msg }, { status: 500 });
+    return NextResponse.json(
+      { error: "작업에 실패했습니다", details: error instanceof Error ? error.message : String(error) },
+      { status: 500 },
+    );
   }
 }
