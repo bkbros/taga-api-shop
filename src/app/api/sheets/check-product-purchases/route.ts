@@ -27,7 +27,10 @@ type CheckProductsSuccess = {
     orderDate?: string;
     quantity: number;
   }>;
-  totalQuantity: number;
+  specifiedProductsQuantity: number; // 지정 상품들만의 총 수량
+  totalQuantity: number; // 전체 구매 총 수량
+  specifiedProductsOrderCount: number; // 지정 상품이 포함된 주문 건수
+  totalOrderCount: number; // 전체 주문 건수
   orderIds: string[];
 };
 
@@ -41,10 +44,10 @@ type RowInput = {
 type RowOutput = {
   rowIndex: number;
   memberId: string;
-  hasPurchasedCell: "⭕" | "❌" | "";
-  totalQuantityCell: number | "";
-  orderCountCell: number | "";
-  productDetailsCell: string;
+  purchasedProductNamesCell: string; // AH: 구매한 상품 목록
+  totalQuantityCell: number | ""; // AI: 전체 구매 총 수량
+  totalOrderCountCell: number | ""; // AJ: 전체 주문 건수
+  specifiedProductDetailsCell: string; // AK: 지정 상품 상세 정보
   hadError: boolean;
 };
 
@@ -248,10 +251,10 @@ export async function POST(req: Request) {
     // 태스크들
     const tasks: Array<() => Promise<RowOutput>> = inputs.map(member => {
       return async () => {
-        let hasPurchasedCell: "⭕" | "❌" | "" = "";
-        let totalQuantityCell: number | "" = "";
-        let orderCountCell: number | "" = "";
-        let productDetailsCell = "";
+        let purchasedProductNamesCell = ""; // AH: 구매한 상품 목록
+        let totalQuantityCell: number | "" = ""; // AI: 전체 구매 총 수량
+        let totalOrderCountCell: number | "" = ""; // AJ: 전체 주문 건수
+        let specifiedProductDetailsCell = ""; // AK: 지정 상품 상세 정보
         let hadError = false;
 
         try {
@@ -259,9 +262,9 @@ export async function POST(req: Request) {
 
           if (!resp.ok) {
             if (resp.status === 404) {
-              hasPurchasedCell = "❌";
+              purchasedProductNamesCell = "없음";
               totalQuantityCell = 0;
-              orderCountCell = 0;
+              totalOrderCountCell = 0;
             } else {
               hadError = true; // 429/5xx 등은 공백 유지
             }
@@ -270,16 +273,28 @@ export async function POST(req: Request) {
             if (isCheckProductsError(payload)) {
               hadError = true;
             } else {
-              hasPurchasedCell = payload.hasPurchased ? "⭕" : "❌";
-              totalQuantityCell = payload.totalQuantity;
-              orderCountCell = payload.orderIds.length;
-
-              // 상품 상세 정보 (간단하게 상품명 리스트)
+              // AH: 구매한 상품 목록 (지정 상품 중 실제 구매한 것들)
               if (payload.purchasedProducts.length > 0) {
-                const productNames = payload.purchasedProducts
+                const uniqueProductNames = Array.from(
+                  new Set(payload.purchasedProducts.map(p => p.productName || `상품${p.productNo}`))
+                );
+                purchasedProductNamesCell = uniqueProductNames.join(", ");
+              } else {
+                purchasedProductNamesCell = "없음";
+              }
+
+              // AI: 전체 구매 총 수량 (기간 내 모든 상품)
+              totalQuantityCell = payload.totalQuantity;
+
+              // AJ: 전체 주문 건수 (기간 내 모든 주문)
+              totalOrderCountCell = payload.totalOrderCount;
+
+              // AK: 지정 상품 상세 정보
+              if (payload.purchasedProducts.length > 0) {
+                const productDetails = payload.purchasedProducts
                   .map(p => `${p.productName || p.productNo}(x${p.quantity})`)
                   .join(", ");
-                productDetailsCell = productNames.substring(0, 500); // 시트 셀 크기 제한 고려
+                specifiedProductDetailsCell = productDetails.substring(0, 500); // 시트 셀 크기 제한 고려
               }
             }
           }
@@ -292,10 +307,10 @@ export async function POST(req: Request) {
         return {
           rowIndex: member.rowIndex,
           memberId: member.memberId,
-          hasPurchasedCell,
+          purchasedProductNamesCell,
           totalQuantityCell,
-          orderCountCell,
-          productDetailsCell,
+          totalOrderCountCell,
+          specifiedProductDetailsCell,
           hadError,
         };
       };
@@ -304,7 +319,7 @@ export async function POST(req: Request) {
     // 동시 실행
     const outputs = await runPool<RowOutput>(tasks, concurrency);
 
-    // 시트 쓰기 (outputStartColumn부터 4개 열: 구매여부, 총수량, 주문수, 상품상세)
+    // 시트 쓰기 (outputStartColumn부터 4개 열: 구매한상품목록, 전체수량, 전체주문수, 지정상품상세)
     const lastRow = inputs.length > 0 ? inputs[inputs.length - 1].rowIndex : endRow;
     const rowsMatrix: (string | number)[][] = Array.from({ length: Math.max(0, lastRow - startRow + 1) }, () => [
       "",
@@ -316,7 +331,12 @@ export async function POST(req: Request) {
     for (const r of outputs) {
       const idx = r.rowIndex - startRow;
       if (idx < 0 || idx >= rowsMatrix.length) continue;
-      rowsMatrix[idx] = [r.hasPurchasedCell, r.totalQuantityCell, r.orderCountCell, r.productDetailsCell];
+      rowsMatrix[idx] = [
+        r.purchasedProductNamesCell,
+        r.totalQuantityCell,
+        r.totalOrderCountCell,
+        r.specifiedProductDetailsCell,
+      ];
     }
 
     // 열 계산 (예: AH, AI, AJ, AK)
@@ -334,8 +354,9 @@ export async function POST(req: Request) {
     // 통계
     const stats = {
       total: outputs.length,
-      hasPurchased: outputs.filter(o => o.hasPurchasedCell === "⭕").length,
-      notPurchased: outputs.filter(o => o.hasPurchasedCell === "❌").length,
+      hasPurchased: outputs.filter(o => o.purchasedProductNamesCell && o.purchasedProductNamesCell !== "없음")
+        .length,
+      notPurchased: outputs.filter(o => o.purchasedProductNamesCell === "없음").length,
       errors: outputs.filter(o => o.hadError).length,
     };
 

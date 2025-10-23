@@ -541,24 +541,57 @@ export default function ProductPurchaseCheck() {
         <h4 className="font-semibold mb-2">📌 출력 열 정보</h4>
         <ul className="list-disc pl-5 space-y-1">
           <li>
-            <b>{outputStartColumn}</b>: 구매 여부 (⭕/❌)
+            <b>{outputStartColumn}</b>: 구매한 상품 목록 (지정한 상품 중 실제 구매한 상품명)
           </li>
           <li>
-            <b>{getColumnLetter(columnLetterToNumber(outputStartColumn) + 1)}</b>: 총 구매 수량
+            <b>{getColumnLetter(columnLetterToNumber(outputStartColumn) + 1)}</b>: 전체 구매 총 수량 (지정 기간 내
+            모든 상품)
           </li>
           <li>
-            <b>{getColumnLetter(columnLetterToNumber(outputStartColumn) + 2)}</b>: 주문 건수
+            <b>{getColumnLetter(columnLetterToNumber(outputStartColumn) + 2)}</b>: 전체 주문 건수 (지정 기간 내 모든
+            주문)
           </li>
           <li>
-            <b>{getColumnLetter(columnLetterToNumber(outputStartColumn) + 3)}</b>: 상품 상세 정보
+            <b>{getColumnLetter(columnLetterToNumber(outputStartColumn) + 3)}</b>: 지정 상품 상세 정보 (상품명 및
+            수량)
           </li>
         </ul>
+        <h4 className="font-semibold mt-4 mb-2">📊 출력 예시</h4>
+        <div className="bg-white p-3 rounded border text-xs">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b">
+                <th className="text-left p-1">{outputStartColumn}</th>
+                <th className="text-left p-1">{getColumnLetter(columnLetterToNumber(outputStartColumn) + 1)}</th>
+                <th className="text-left p-1">{getColumnLetter(columnLetterToNumber(outputStartColumn) + 2)}</th>
+                <th className="text-left p-1">{getColumnLetter(columnLetterToNumber(outputStartColumn) + 3)}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr className="border-b">
+                <td className="p-1">상품A, 상품B</td>
+                <td className="p-1">12</td>
+                <td className="p-1">5</td>
+                <td className="p-1">상품A(x2), 상품B(x3)</td>
+              </tr>
+              <tr>
+                <td className="p-1">없음</td>
+                <td className="p-1">8</td>
+                <td className="p-1">3</td>
+                <td className="p-1"></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
         <h4 className="font-semibold mt-4 mb-2">💡 사용 팁</h4>
         <ul className="list-disc pl-5 space-y-1">
           <li>회원 정보 검증 후 AC 열에 회원ID가 있어야 합니다.</li>
           <li>상품 번호는 Cafe24 관리자에서 확인할 수 있습니다.</li>
           <li>기간을 지정하지 않으면 최근 3개월 데이터를 조회합니다.</li>
           <li>Cafe24 레이트리밋이 잦으면 concurrency를 낮춰서 실행하세요.</li>
+          <li>
+            <b>AI, AJ 열</b>은 지정한 상품과 무관하게 해당 기간 동안의 <b>전체 구매 통계</b>입니다.
+          </li>
         </ul>
       </div>
     </div>

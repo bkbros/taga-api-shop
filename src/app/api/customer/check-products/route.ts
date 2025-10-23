@@ -34,7 +34,10 @@ type CustomerProductCheck = {
     orderDate?: string;
     quantity: number;
   }>;
-  totalQuantity: number;
+  specifiedProductsQuantity: number; // 지정 상품들만의 총 수량
+  totalQuantity: number; // 전체 구매 총 수량
+  specifiedProductsOrderCount: number; // 지정 상품이 포함된 주문 건수
+  totalOrderCount: number; // 전체 주문 건수
   orderIds: string[];
 };
 /* ---------------------------------------------- */
@@ -247,6 +250,16 @@ export async function GET(req: Request) {
 
     console.log(`[ORDERS] Total orders fetched: ${allOrders.length}`);
 
+    // 전체 주문 통계 계산
+    const totalOrderCount = allOrders.length;
+    let totalQuantityAllProducts = 0;
+    for (const order of allOrders) {
+      const items = order.items ?? [];
+      for (const item of items) {
+        totalQuantityAllProducts += item.quantity ?? 0;
+      }
+    }
+
     // 특정 상품이 포함된 주문 필터링
     const productSet = new Set(productNos);
     const purchasedProducts: CustomerProductCheck["purchasedProducts"] = [];
@@ -278,7 +291,7 @@ export async function GET(req: Request) {
       }
     }
 
-    const totalQuantity = purchasedProducts.reduce((sum, p) => sum + p.quantity, 0);
+    const specifiedProductsQuantity = purchasedProducts.reduce((sum, p) => sum + p.quantity, 0);
     const hasPurchased = purchasedProducts.length > 0;
 
     const processingTime = Date.now() - startT;
@@ -286,7 +299,10 @@ export async function GET(req: Request) {
       memberId,
       hasPurchased,
       purchasedProducts,
-      totalQuantity,
+      specifiedProductsQuantity, // 지정 상품들만의 총 수량
+      totalQuantity: totalQuantityAllProducts, // 전체 구매 총 수량
+      specifiedProductsOrderCount: orderIdSet.size, // 지정 상품이 포함된 주문 건수
+      totalOrderCount, // 전체 주문 건수
       orderIds: Array.from(orderIdSet),
     };
 
