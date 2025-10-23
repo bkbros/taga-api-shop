@@ -252,10 +252,19 @@ export async function GET(req: Request) {
     const purchasedProducts: CustomerProductCheck["purchasedProducts"] = [];
     const orderIdSet = new Set<string>();
 
+    // 디버깅: 첫 번째 주문의 아이템 확인
+    if (allOrders.length > 0) {
+      const firstOrder = allOrders[0];
+      const itemProductNos = (firstOrder.items ?? []).map(it => it.product_no);
+      console.log(`[DEBUG] First order items product_nos: ${itemProductNos.join(", ")}`);
+      console.log(`[DEBUG] Looking for product_nos: ${Array.from(productSet).join(", ")}`);
+    }
+
     for (const order of allOrders) {
       const items = order.items ?? [];
       for (const item of items) {
         if (item.product_no && productSet.has(item.product_no)) {
+          console.log(`[MATCH] Found product ${item.product_no} in order ${order.order_id}`);
           purchasedProducts.push({
             productNo: item.product_no,
             productCode: item.product_code,

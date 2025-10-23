@@ -2,6 +2,26 @@
 
 import { useCallback, useMemo, useRef, useState, type ChangeEvent } from "react";
 
+// 열 문자를 숫자로 변환 (A=1, B=2, ..., Z=26, AA=27, AB=28, ...)
+function columnLetterToNumber(col: string): number {
+  let num = 0;
+  for (let i = 0; i < col.length; i++) {
+    num = num * 26 + (col.charCodeAt(i) - 64);
+  }
+  return num;
+}
+
+// 숫자를 열 문자로 변환 (1=A, 2=B, ..., 26=Z, 27=AA, 28=AB, ...)
+function getColumnLetter(num: number): string {
+  let letter = "";
+  while (num > 0) {
+    const mod = (num - 1) % 26;
+    letter = String.fromCharCode(65 + mod) + letter;
+    num = Math.floor((num - 1) / 26);
+  }
+  return letter;
+}
+
 type VerificationStats = {
   total: number;
   hasPurchased: number;
@@ -185,10 +205,11 @@ export default function ProductPurchaseCheck() {
 
         addLog(batch.message);
         if (batch.used) addLog(`사용한 설정: limit=${batch.used.limit}, concurrency=${batch.used.concurrency}`);
-        if (batch.processedRange)
-          addLog(
-            `시트 반영 범위: ${outputStartColumn}${batch.processedRange.startRow}~${String.fromCharCode(outputStartColumn.charCodeAt(0) + 3)}${batch.processedRange.endRow}`,
-          );
+        if (batch.processedRange) {
+          const colStart = outputStartColumn.toUpperCase();
+          const colEnd = getColumnLetter(columnLetterToNumber(colStart) + 3);
+          addLog(`시트 반영 범위: ${colStart}${batch.processedRange.startRow}~${colEnd}${batch.processedRange.endRow}`);
+        }
 
         // 누적 통계 업데이트
         setAggStats(prev => ({
@@ -523,13 +544,13 @@ export default function ProductPurchaseCheck() {
             <b>{outputStartColumn}</b>: 구매 여부 (⭕/❌)
           </li>
           <li>
-            <b>{String.fromCharCode(outputStartColumn.charCodeAt(0) + 1)}</b>: 총 구매 수량
+            <b>{getColumnLetter(columnLetterToNumber(outputStartColumn) + 1)}</b>: 총 구매 수량
           </li>
           <li>
-            <b>{String.fromCharCode(outputStartColumn.charCodeAt(0) + 2)}</b>: 주문 건수
+            <b>{getColumnLetter(columnLetterToNumber(outputStartColumn) + 2)}</b>: 주문 건수
           </li>
           <li>
-            <b>{String.fromCharCode(outputStartColumn.charCodeAt(0) + 3)}</b>: 상품 상세 정보
+            <b>{getColumnLetter(columnLetterToNumber(outputStartColumn) + 3)}</b>: 상품 상세 정보
           </li>
         </ul>
         <h4 className="font-semibold mt-4 mb-2">💡 사용 팁</h4>

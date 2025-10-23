@@ -54,6 +54,26 @@ const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 const isCheckProductsError = (v: unknown): v is CheckProductsError =>
   typeof v === "object" && v !== null && "error" in v;
 
+// 열 문자를 숫자로 변환 (A=1, B=2, ..., Z=26, AA=27, AB=28, ...)
+function columnLetterToNumber(col: string): number {
+  let num = 0;
+  for (let i = 0; i < col.length; i++) {
+    num = num * 26 + (col.charCodeAt(i) - 64);
+  }
+  return num;
+}
+
+// 숫자를 열 문자로 변환 (1=A, 2=B, ..., 26=Z, 27=AA, 28=AB, ...)
+function getColumnLetter(num: number): string {
+  let letter = "";
+  while (num > 0) {
+    const mod = (num - 1) % 26;
+    letter = String.fromCharCode(65 + mod) + letter;
+    num = Math.floor((num - 1) / 26);
+  }
+  return letter;
+}
+
 // 간단 동시성 풀
 async function runPool<T>(tasks: Array<() => Promise<T>>, concurrency: number): Promise<T[]> {
   const results: T[] = [];
@@ -301,7 +321,8 @@ export async function POST(req: Request) {
 
     // 열 계산 (예: AH, AI, AJ, AK)
     const colStart = outputStartColumn.toUpperCase();
-    const writeRange = `${targetSheet}!${colStart}${startRow}:${String.fromCharCode(colStart.charCodeAt(0) + 3)}${lastRow}`;
+    const colEnd = getColumnLetter(columnLetterToNumber(colStart) + 3);
+    const writeRange = `${targetSheet}!${colStart}${startRow}:${colEnd}${lastRow}`;
 
     await sheets.spreadsheets.values.update({
       spreadsheetId,
