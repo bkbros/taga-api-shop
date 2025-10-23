@@ -1,6 +1,6 @@
 // src/app/api/customer/check-products/route.ts
 import { NextResponse } from "next/server";
-import axios, { AxiosError } from "axios";
+import axios from "axios";
 import { loadParams } from "@/lib/ssm";
 
 /* -------------------- 타입 -------------------- */
