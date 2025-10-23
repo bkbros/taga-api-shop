@@ -27,6 +27,13 @@ type CheckProductsSuccess = {
     orderDate?: string;
     quantity: number;
   }>;
+  allProducts: Array<{
+    // 전체 구매 상품 목록
+    productNo: number;
+    productCode?: string;
+    productName?: string;
+    quantity: number;
+  }>;
   specifiedProductsQuantity: number; // 지정 상품들만의 총 수량
   totalQuantity: number; // 전체 구매 총 수량
   specifiedProductsOrderCount: number; // 지정 상품이 포함된 주문 건수
@@ -44,10 +51,10 @@ type RowInput = {
 type RowOutput = {
   rowIndex: number;
   memberId: string;
-  purchasedProductNamesCell: string; // AH: 구매한 상품 목록
+  purchasedProductNamesCell: string; // AH: 지정 상품 중 구매한 상품 목록
   totalQuantityCell: number | ""; // AI: 전체 구매 총 수량
   totalOrderCountCell: number | ""; // AJ: 전체 주문 건수
-  specifiedProductDetailsCell: string; // AK: 지정 상품 상세 정보
+  allProductsListCell: string; // AK: 전체 구매 상품 목록
   hadError: boolean;
 };
 
@@ -251,10 +258,10 @@ export async function POST(req: Request) {
     // 태스크들
     const tasks: Array<() => Promise<RowOutput>> = inputs.map(member => {
       return async () => {
-        let purchasedProductNamesCell = ""; // AH: 구매한 상품 목록
+        let purchasedProductNamesCell = ""; // AH: 지정 상품 중 구매한 상품 목록
         let totalQuantityCell: number | "" = ""; // AI: 전체 구매 총 수량
         let totalOrderCountCell: number | "" = ""; // AJ: 전체 주문 건수
-        let specifiedProductDetailsCell = ""; // AK: 지정 상품 상세 정보
+        let allProductsListCell = ""; // AK: 전체 구매 상품 목록
         let hadError = false;
 
         try {
@@ -265,6 +272,7 @@ export async function POST(req: Request) {
               purchasedProductNamesCell = "없음";
               totalQuantityCell = 0;
               totalOrderCountCell = 0;
+              allProductsListCell = "";
             } else {
               hadError = true; // 429/5xx 등은 공백 유지
             }
@@ -273,7 +281,7 @@ export async function POST(req: Request) {
             if (isCheckProductsError(payload)) {
               hadError = true;
             } else {
-              // AH: 구매한 상품 목록 (지정 상품 중 실제 구매한 것들)
+              // AH: 지정 상품 중 구매한 상품 목록
               if (payload.purchasedProducts.length > 0) {
                 const uniqueProductNames = Array.from(
                   new Set(payload.purchasedProducts.map(p => p.productName || `상품${p.productNo}`))
@@ -289,12 +297,16 @@ export async function POST(req: Request) {
               // AJ: 전체 주문 건수 (기간 내 모든 주문)
               totalOrderCountCell = payload.totalOrderCount;
 
-              // AK: 지정 상품 상세 정보
-              if (payload.purchasedProducts.length > 0) {
-                const productDetails = payload.purchasedProducts
-                  .map(p => `${p.productName || p.productNo}(x${p.quantity})`)
+              // AK: 전체 구매 상품 목록 (상품명만, 최대 10개)
+              if (payload.allProducts.length > 0) {
+                const productNames = payload.allProducts
+                  .slice(0, 10) // 최대 10개만
+                  .map(p => p.productName || `상품${p.productNo}`)
                   .join(", ");
-                specifiedProductDetailsCell = productDetails.substring(0, 500); // 시트 셀 크기 제한 고려
+                allProductsListCell = productNames.substring(0, 500); // 시트 셀 크기 제한 고려
+                if (payload.allProducts.length > 10) {
+                  allProductsListCell += ` 외 ${payload.allProducts.length - 10}개`;
+                }
               }
             }
           }
@@ -310,7 +322,7 @@ export async function POST(req: Request) {
           purchasedProductNamesCell,
           totalQuantityCell,
           totalOrderCountCell,
-          specifiedProductDetailsCell,
+          allProductsListCell,
           hadError,
         };
       };
@@ -319,7 +331,7 @@ export async function POST(req: Request) {
     // 동시 실행
     const outputs = await runPool<RowOutput>(tasks, concurrency);
 
-    // 시트 쓰기 (outputStartColumn부터 4개 열: 구매한상품목록, 전체수량, 전체주문수, 지정상품상세)
+    // 시트 쓰기 (outputStartColumn부터 4개 열: 지정상품구매목록, 전체수량, 전체주문수, 전체상품목록)
     const lastRow = inputs.length > 0 ? inputs[inputs.length - 1].rowIndex : endRow;
     const rowsMatrix: (string | number)[][] = Array.from({ length: Math.max(0, lastRow - startRow + 1) }, () => [
       "",
@@ -335,7 +347,7 @@ export async function POST(req: Request) {
         r.purchasedProductNamesCell,
         r.totalQuantityCell,
         r.totalOrderCountCell,
-        r.specifiedProductDetailsCell,
+        r.allProductsListCell,
       ];
     }
 

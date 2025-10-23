@@ -34,6 +34,13 @@ type CustomerProductCheck = {
     orderDate?: string;
     quantity: number;
   }>;
+  allProducts: Array<{
+    // 전체 구매 상품 목록
+    productNo: number;
+    productCode?: string;
+    productName?: string;
+    quantity: number;
+  }>;
   specifiedProductsQuantity: number; // 지정 상품들만의 총 수량
   totalQuantity: number; // 전체 구매 총 수량
   specifiedProductsOrderCount: number; // 지정 상품이 포함된 주문 건수
@@ -250,15 +257,34 @@ export async function GET(req: Request) {
 
     console.log(`[ORDERS] Total orders fetched: ${allOrders.length}`);
 
-    // 전체 주문 통계 계산
+    // 전체 주문 통계 및 전체 상품 목록 계산
     const totalOrderCount = allOrders.length;
     let totalQuantityAllProducts = 0;
+    const allProductsMap = new Map<number, { productNo: number; productCode?: string; productName?: string; quantity: number }>();
+
     for (const order of allOrders) {
       const items = order.items ?? [];
       for (const item of items) {
         totalQuantityAllProducts += item.quantity ?? 0;
+
+        // 전체 상품 목록 집계
+        if (item.product_no) {
+          const existing = allProductsMap.get(item.product_no);
+          if (existing) {
+            existing.quantity += item.quantity ?? 0;
+          } else {
+            allProductsMap.set(item.product_no, {
+              productNo: item.product_no,
+              productCode: item.product_code,
+              productName: item.product_name,
+              quantity: item.quantity ?? 0,
+            });
+          }
+        }
       }
     }
+
+    const allProducts = Array.from(allProductsMap.values());
 
     // 특정 상품이 포함된 주문 필터링
     const productSet = new Set(productNos);
@@ -299,6 +325,7 @@ export async function GET(req: Request) {
       memberId,
       hasPurchased,
       purchasedProducts,
+      allProducts, // 전체 구매 상품 목록
       specifiedProductsQuantity, // 지정 상품들만의 총 수량
       totalQuantity: totalQuantityAllProducts, // 전체 구매 총 수량
       specifiedProductsOrderCount: orderIdSet.size, // 지정 상품이 포함된 주문 건수

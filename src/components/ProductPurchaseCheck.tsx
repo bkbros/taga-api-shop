@@ -541,7 +541,7 @@ export default function ProductPurchaseCheck() {
         <h4 className="font-semibold mb-2">📌 출력 열 정보</h4>
         <ul className="list-disc pl-5 space-y-1">
           <li>
-            <b>{outputStartColumn}</b>: 구매한 상품 목록 (지정한 상품 중 실제 구매한 상품명)
+            <b>{outputStartColumn}</b>: 지정 상품 구매 목록 (지정한 상품 중 실제 구매한 상품명)
           </li>
           <li>
             <b>{getColumnLetter(columnLetterToNumber(outputStartColumn) + 1)}</b>: 전체 구매 총 수량 (지정 기간 내
@@ -552,8 +552,8 @@ export default function ProductPurchaseCheck() {
             주문)
           </li>
           <li>
-            <b>{getColumnLetter(columnLetterToNumber(outputStartColumn) + 3)}</b>: 지정 상품 상세 정보 (상품명 및
-            수량)
+            <b>{getColumnLetter(columnLetterToNumber(outputStartColumn) + 3)}</b>: 전체 구매 상품 목록 (기간 내 구매한
+            모든 상품명, 최대 10개)
           </li>
         </ul>
         <h4 className="font-semibold mt-4 mb-2">📊 출력 예시</h4>
@@ -572,13 +572,13 @@ export default function ProductPurchaseCheck() {
                 <td className="p-1">상품A, 상품B</td>
                 <td className="p-1">12</td>
                 <td className="p-1">5</td>
-                <td className="p-1">상품A(x2), 상품B(x3)</td>
+                <td className="p-1">상품A, 상품B, 상품C, 상품D</td>
               </tr>
               <tr>
                 <td className="p-1">없음</td>
                 <td className="p-1">8</td>
                 <td className="p-1">3</td>
-                <td className="p-1"></td>
+                <td className="p-1">상품X, 상품Y, 상품Z</td>
               </tr>
             </tbody>
           </table>
