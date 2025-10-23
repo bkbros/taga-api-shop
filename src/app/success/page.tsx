@@ -1,6 +1,7 @@
 "use client";
 
 import SheetsVerification from "@/components/SheetsVerification";
+import ProductPurchaseCheck from "@/components/ProductPurchaseCheck";
 import { useState } from "react";
 
 type SyncStatus = {
@@ -411,6 +412,11 @@ export default function SuccessPage() {
       {/* 회원 정보 검증 섹션 */}
       <section className="mt-12">
         <SheetsVerification />
+      </section>
+
+      {/* 상품 구매 확인 섹션 */}
+      <section className="mt-12">
+        <ProductPurchaseCheck />
       </section>
 
       {/* <section className="mt-12 p-6 bg-white rounded-lg shadow-lg border">
