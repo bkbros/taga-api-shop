@@ -93,45 +93,46 @@ export async function GET(req: Request) {
       dataKeys: Object.keys(tokenRes.data || {})
     });
 
-    const { access_token, refresh_token, expires_in } = tokenRes.data;
+    const { access_token, refresh_token, expires_at } = tokenRes.data;
 
     console.log('[OAUTH] Token data received:', {
       hasAccessToken: !!access_token,
       hasRefreshToken: !!refresh_token,
-      expiresIn: expires_in,
-      expiresInType: typeof expires_in
+      expiresAt: expires_at
     });
 
-    // 만료 시각 계산 (밀리초 단위, 60초 버퍼)
+    // Cafe24는 expires_at을 timestamp(초 단위)로 반환
+    // 밀리초로 변환하고 60초 버퍼 적용
     const EXPIRY_SKEW_SEC = 60;
-    const expiresInSec = Number(expires_in);
+    const expiresAtSec = Number(expires_at);
 
-    if (!expiresInSec || isNaN(expiresInSec)) {
-      console.error('[OAUTH] Invalid expires_in value:', expires_in);
-      throw new Error('Invalid expires_in from Cafe24');
+    if (!expiresAtSec || isNaN(expiresAtSec)) {
+      console.error('[OAUTH] Invalid expires_at value:', expires_at);
+      throw new Error('Invalid expires_at from Cafe24');
     }
 
-    const expiresAtMs = Date.now() + Math.max(0, (expiresInSec - EXPIRY_SKEW_SEC) * 1000);
+    const expiresAtMs = (expiresAtSec - EXPIRY_SKEW_SEC) * 1000;
 
     console.log('[OAUTH] Saving tokens to SSM...');
-    // SSM에 저장 (cafe24Auth.ts와 동일한 키 이름 사용)
+    // SSM에 저장
     await Promise.all([
       saveParam("access_token", access_token),
       saveParam("refresh_token", refresh_token),
       saveParam("access_token_expires_at", String(expiresAtMs)),
     ]);
     console.log('[OAUTH] ✓ Tokens saved successfully');
-    console.log('[OAUTH] ✓ Expires in', expiresInSec, 'seconds');
     console.log('[OAUTH] ✓ Expires at:', new Date(expiresAtMs).toISOString());
 
     // HTTP-only 쿠키 설정
     const response = NextResponse.redirect(`${process.env.NEXT_PUBLIC_BASE_URL}/success`);
     // access_token 쿠키: 전체 경로
+    // maxAge는 초 단위이므로 expiresAtSec - 현재시간(초) 사용
+    const maxAgeSec = Math.max(0, expiresAtSec - Math.floor(Date.now() / 1000));
     response.cookies.set("access_token", access_token, {
       httpOnly: true,
       secure: true,
       path: "/",
-      maxAge: Number(expires_in),
+      maxAge: maxAgeSec,
     });
     // refresh_token 쿠키: 리프레시 엔드포인트에만 전송
     response.cookies.set("refresh_token", refresh_token, {
