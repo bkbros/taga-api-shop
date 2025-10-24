@@ -20,7 +20,9 @@ type Cafe24Order = {
   created_date?: string;
   order_status?: string;
   status?: string;
-  order_price_amount?: string; // 주문 금액
+  actual_order_amount?: string; // 실제 주문 금액 (취소/환불 반영)
+  initial_order_amount?: string; // 최초 주문 금액
+  payment_amount?: string; // 결제 금액
   items?: Cafe24OrderItem[];
 };
 
@@ -259,16 +261,6 @@ export async function GET(req: Request) {
 
     console.log(`[ORDERS] Total orders fetched: ${allOrders.length}`);
 
-    // 디버깅: 첫 번째 주문의 필드 확인
-    if (allOrders.length > 0) {
-      const firstOrder = allOrders[0];
-      console.log('[DEBUG] First order keys:', Object.keys(firstOrder));
-      console.log('[DEBUG] First order amounts:', {
-        order_price_amount: firstOrder.order_price_amount,
-        // 다른 가능한 금액 필드들도 확인
-      });
-    }
-
     // 전체 주문 통계 및 전체 상품 목록 계산
     const totalOrderCount = allOrders.length;
     let totalQuantityAllProducts = 0;
@@ -276,14 +268,10 @@ export async function GET(req: Request) {
     const allProductsMap = new Map<number, { productNo: number; productCode?: string; productName?: string; quantity: number }>();
 
     for (const order of allOrders) {
-      // 주문 금액 누적
-      if (order.order_price_amount) {
-        const amt = Number(order.order_price_amount) || 0;
-        console.log(`[DEBUG] Order ${order.order_id}: order_price_amount=${order.order_price_amount}, parsed=${amt}`);
-        totalAmount += amt;
-      } else {
-        console.log(`[DEBUG] Order ${order.order_id}: order_price_amount is missing or falsy`);
-      }
+      // 주문 금액 누적 (actual_order_amount 사용)
+      const amount = order.actual_order_amount || order.payment_amount || "0";
+      const amt = Number(amount) || 0;
+      totalAmount += amt;
 
       const items = order.items ?? [];
       for (const item of items) {
