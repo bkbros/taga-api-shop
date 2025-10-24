@@ -19,10 +19,13 @@ const EXPIRY_SKEW_SEC = 60; // 만료 버퍼(초)
 
 /** 내부: refresh_token으로 새 access_token 발급 + SSM 갱신 */
 async function refreshAccessToken(): Promise<{ token: string; expiresAtMs: number }> {
+  console.log('[AUTH] Attempting to refresh access token...');
   const { refresh_token } = await loadParams(["refresh_token"]);
   if (!refresh_token) {
-    throw new Error("Missing refresh_token in SSM");
+    console.error('[AUTH] ❌ No refresh_token found in SSM - OAuth login required!');
+    throw new Error("Missing refresh_token in SSM - please re-authenticate via OAuth");
   }
+  console.log('[AUTH] ✓ Refresh token found, calling Cafe24...');
 
   const url = `https://${mallId}.cafe24api.com/api/v2/oauth/token`;
   const form = new URLSearchParams();
@@ -51,14 +54,28 @@ async function refreshAccessToken(): Promise<{ token: string; expiresAtMs: numbe
 /** 만료 전이면 기존 토큰, 아니면 자동으로 새로 받아서 리턴 */
 export async function getAccessToken(): Promise<string> {
   try {
+    console.log('[AUTH] Loading tokens from SSM...');
     const { access_token, access_token_expires_at } = await loadParams(["access_token", "access_token_expires_at"]);
     const expMs = Number(access_token_expires_at || "0");
+    const now = Date.now();
+
+    console.log('[AUTH] Token status:', {
+      hasToken: !!access_token,
+      expiresAt: expMs ? new Date(expMs).toISOString() : 'none',
+      isExpired: now >= expMs,
+      remainingSeconds: Math.floor((expMs - now) / 1000)
+    });
+
     if (!access_token || !expMs || Date.now() >= expMs) {
+      console.log('[AUTH] Token missing or expired, attempting refresh...');
       const { token } = await refreshAccessToken();
       return token;
     }
+    console.log('[AUTH] Using existing valid token');
     return access_token;
-  } catch {
+  } catch (error) {
+    console.error('[AUTH] Error loading token:', error);
+    console.log('[AUTH] Attempting to refresh token...');
     // 저장된 값이 없거나 에러면 강제 리프레시 후 반환
     const { token } = await refreshAccessToken();
     return token;
