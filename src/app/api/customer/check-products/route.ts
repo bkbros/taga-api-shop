@@ -15,14 +15,32 @@ type Cafe24OrderItem = {
   status?: string;
 };
 
+type Cafe24OrderAmount = {
+  order_price_amount?: string;
+  shipping_fee?: string;
+  points_spent_amount?: string;
+  credits_spent_amount?: string;
+  coupon_discount_price?: string;
+  coupon_shipping_fee_amount?: string;
+  membership_discount_amount?: string;
+  shipping_fee_discount_amount?: string;
+  set_product_discount_amount?: string;
+  app_discount_amount?: string;
+  point_incentive_amount?: string;
+  total_amount_due?: string;
+  payment_amount?: string;
+  market_other_discount_amount?: string;
+  tax?: string | null;
+};
+
 type Cafe24Order = {
   order_id: string;
   created_date?: string;
   order_status?: string;
   status?: string;
-  actual_order_amount?: string; // 실제 주문 금액 (취소/환불 반영)
-  initial_order_amount?: string; // 최초 주문 금액
-  payment_amount?: string; // 결제 금액
+  actual_order_amount?: Cafe24OrderAmount; // 실제 주문 금액 객체
+  initial_order_amount?: Cafe24OrderAmount; // 최초 주문 금액 객체
+  payment_amount?: string; // 결제 금액 (루트 레벨)
   items?: Cafe24OrderItem[];
 };
 
@@ -304,10 +322,15 @@ export async function GET(req: Request) {
     const allProductsMap = new Map<number, { productNo: number; productCode?: string; productName?: string; quantity: number }>();
 
     for (const order of allOrders) {
-      // 주문 금액 누적 (actual_order_amount 사용)
-      const amount = order.actual_order_amount || order.payment_amount || "0";
-      const amt = Number(amount) || 0;
-      console.log(`[DEBUG] Order ${order.order_id}: amount=${amount}, parsed=${amt}`);
+      // 주문 금액 누적 (actual_order_amount.payment_amount 또는 payment_amount 사용)
+      let amountStr = "0";
+      if (order.actual_order_amount && typeof order.actual_order_amount === "object") {
+        amountStr = order.actual_order_amount.payment_amount || "0";
+      } else if (order.payment_amount) {
+        amountStr = order.payment_amount;
+      }
+      const amt = Number(amountStr) || 0;
+      console.log(`[DEBUG] Order ${order.order_id}: amountStr=${amountStr}, parsed=${amt}`);
       totalAmount += amt;
 
       const items = order.items ?? [];
