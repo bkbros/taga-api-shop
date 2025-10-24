@@ -430,7 +430,7 @@
 
 import { NextResponse } from "next/server";
 import axios, { AxiosError, AxiosResponse } from "axios";
-import { loadParams } from "@/lib/ssm";
+import { getAccessToken } from "@/lib/cafe24Auth";
 
 /** ===================== Types ===================== **/
 type Customer = {
@@ -579,7 +579,7 @@ export async function GET(req: Request) {
   console.log(`[REQUEST] primary="${primary}", phone_hint="${phoneHint ?? ""}", period=${period}, shop_no=${shopNo}`);
 
   try {
-    const { access_token } = (await loadParams(["access_token"])) as { access_token: string };
+    const access_token = await getAccessToken();
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID;
     if (!mallId) return NextResponse.json({ error: "Missing NEXT_PUBLIC_CAFE24_MALL_ID" }, { status: 500 });
 

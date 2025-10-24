@@ -555,9 +555,13 @@ export default function ProductPurchaseCheck() {
             <b>{getColumnLetter(columnLetterToNumber(outputStartColumn) + 3)}</b>: 전체 구매 상품 목록 (기간 내 구매한
             모든 상품명, 최대 10개)
           </li>
+          <li>
+            <b>{getColumnLetter(columnLetterToNumber(outputStartColumn) + 4)}</b>: 전체 구매 금액 (지정 기간 내 모든
+            주문 금액 합계)
+          </li>
         </ul>
         <h4 className="font-semibold mt-4 mb-2">📊 출력 예시</h4>
-        <div className="bg-white p-3 rounded border text-xs">
+        <div className="bg-white p-3 rounded border text-xs overflow-x-auto">
           <table className="w-full">
             <thead>
               <tr className="border-b">
@@ -565,6 +569,7 @@ export default function ProductPurchaseCheck() {
                 <th className="text-left p-1">{getColumnLetter(columnLetterToNumber(outputStartColumn) + 1)}</th>
                 <th className="text-left p-1">{getColumnLetter(columnLetterToNumber(outputStartColumn) + 2)}</th>
                 <th className="text-left p-1">{getColumnLetter(columnLetterToNumber(outputStartColumn) + 3)}</th>
+                <th className="text-left p-1">{getColumnLetter(columnLetterToNumber(outputStartColumn) + 4)}</th>
               </tr>
             </thead>
             <tbody>
@@ -573,12 +578,14 @@ export default function ProductPurchaseCheck() {
                 <td className="p-1">12</td>
                 <td className="p-1">5</td>
                 <td className="p-1">상품A, 상품B, 상품C, 상품D</td>
+                <td className="p-1">150000</td>
               </tr>
               <tr>
                 <td className="p-1">없음</td>
                 <td className="p-1">8</td>
                 <td className="p-1">3</td>
                 <td className="p-1">상품X, 상품Y, 상품Z</td>
+                <td className="p-1">85000</td>
               </tr>
             </tbody>
           </table>
@@ -590,7 +597,7 @@ export default function ProductPurchaseCheck() {
           <li>기간을 지정하지 않으면 최근 3개월 데이터를 조회합니다.</li>
           <li>Cafe24 레이트리밋이 잦으면 concurrency를 낮춰서 실행하세요.</li>
           <li>
-            <b>AI, AJ 열</b>은 지정한 상품과 무관하게 해당 기간 동안의 <b>전체 구매 통계</b>입니다.
+            <b>AI, AJ, AL 열</b>은 지정한 상품과 무관하게 해당 기간 동안의 <b>전체 구매 통계</b>입니다.
           </li>
         </ul>
       </div>

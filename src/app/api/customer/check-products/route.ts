@@ -1,7 +1,7 @@
 // src/app/api/customer/check-products/route.ts
 import { NextResponse } from "next/server";
 import axios from "axios";
-import { loadParams } from "@/lib/ssm";
+import { getAccessToken } from "@/lib/cafe24Auth";
 
 /* -------------------- 타입 -------------------- */
 type Cafe24OrderItem = {
@@ -20,6 +20,7 @@ type Cafe24Order = {
   created_date?: string;
   order_status?: string;
   status?: string;
+  order_price_amount?: string; // 주문 금액
   items?: Cafe24OrderItem[];
 };
 
@@ -45,6 +46,7 @@ type CustomerProductCheck = {
   totalQuantity: number; // 전체 구매 총 수량
   specifiedProductsOrderCount: number; // 지정 상품이 포함된 주문 건수
   totalOrderCount: number; // 전체 주문 건수
+  totalAmount: number; // 전체 구매 금액
   orderIds: string[];
 };
 /* ---------------------------------------------- */
@@ -186,8 +188,8 @@ export async function GET(req: Request) {
 
     console.log(`[CHECK-PRODUCTS] member_id=${memberId}, products=${productNos.join(",")}, period=${fmtKST(startDate)}~${fmtKST(endDate)}`);
 
-    // AWS SSM에서 토큰 로드
-    const { access_token } = (await loadParams(["access_token"])) as { access_token: string };
+    // 토큰 자동 갱신 포함 로드
+    const access_token = await getAccessToken();
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID;
     if (!mallId) {
       return NextResponse.json({ error: "Missing NEXT_PUBLIC_CAFE24_MALL_ID" }, { status: 500 });
@@ -260,9 +262,15 @@ export async function GET(req: Request) {
     // 전체 주문 통계 및 전체 상품 목록 계산
     const totalOrderCount = allOrders.length;
     let totalQuantityAllProducts = 0;
+    let totalAmount = 0; // 전체 구매 금액
     const allProductsMap = new Map<number, { productNo: number; productCode?: string; productName?: string; quantity: number }>();
 
     for (const order of allOrders) {
+      // 주문 금액 누적
+      if (order.order_price_amount) {
+        totalAmount += Number(order.order_price_amount) || 0;
+      }
+
       const items = order.items ?? [];
       for (const item of items) {
         totalQuantityAllProducts += item.quantity ?? 0;
@@ -330,6 +338,7 @@ export async function GET(req: Request) {
       totalQuantity: totalQuantityAllProducts, // 전체 구매 총 수량
       specifiedProductsOrderCount: orderIdSet.size, // 지정 상품이 포함된 주문 건수
       totalOrderCount, // 전체 주문 건수
+      totalAmount, // 전체 구매 금액
       orderIds: Array.from(orderIdSet),
     };
 

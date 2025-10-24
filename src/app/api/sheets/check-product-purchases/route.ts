@@ -38,6 +38,7 @@ type CheckProductsSuccess = {
   totalQuantity: number; // 전체 구매 총 수량
   specifiedProductsOrderCount: number; // 지정 상품이 포함된 주문 건수
   totalOrderCount: number; // 전체 주문 건수
+  totalAmount: number; // 전체 구매 금액
   orderIds: string[];
 };
 
@@ -55,6 +56,7 @@ type RowOutput = {
   totalQuantityCell: number | ""; // AI: 전체 구매 총 수량
   totalOrderCountCell: number | ""; // AJ: 전체 주문 건수
   allProductsListCell: string; // AK: 전체 구매 상품 목록
+  totalAmountCell: number | ""; // AL: 전체 구매 금액
   hadError: boolean;
 };
 
@@ -262,6 +264,7 @@ export async function POST(req: Request) {
         let totalQuantityCell: number | "" = ""; // AI: 전체 구매 총 수량
         let totalOrderCountCell: number | "" = ""; // AJ: 전체 주문 건수
         let allProductsListCell = ""; // AK: 전체 구매 상품 목록
+        let totalAmountCell: number | "" = ""; // AL: 전체 구매 금액
         let hadError = false;
 
         try {
@@ -273,6 +276,7 @@ export async function POST(req: Request) {
               totalQuantityCell = 0;
               totalOrderCountCell = 0;
               allProductsListCell = "";
+              totalAmountCell = 0;
             } else {
               hadError = true; // 429/5xx 등은 공백 유지
             }
@@ -308,6 +312,9 @@ export async function POST(req: Request) {
                   allProductsListCell += ` 외 ${payload.allProducts.length - 10}개`;
                 }
               }
+
+              // AL: 전체 구매 금액
+              totalAmountCell = payload.totalAmount;
             }
           }
         } catch (err) {
@@ -323,6 +330,7 @@ export async function POST(req: Request) {
           totalQuantityCell,
           totalOrderCountCell,
           allProductsListCell,
+          totalAmountCell,
           hadError,
         };
       };
@@ -331,9 +339,10 @@ export async function POST(req: Request) {
     // 동시 실행
     const outputs = await runPool<RowOutput>(tasks, concurrency);
 
-    // 시트 쓰기 (outputStartColumn부터 4개 열: 지정상품구매목록, 전체수량, 전체주문수, 전체상품목록)
+    // 시트 쓰기 (outputStartColumn부터 5개 열: 지정상품구매목록, 전체수량, 전체주문수, 전체상품목록, 전체구매금액)
     const lastRow = inputs.length > 0 ? inputs[inputs.length - 1].rowIndex : endRow;
     const rowsMatrix: (string | number)[][] = Array.from({ length: Math.max(0, lastRow - startRow + 1) }, () => [
+      "",
       "",
       "",
       "",
@@ -348,12 +357,13 @@ export async function POST(req: Request) {
         r.totalQuantityCell,
         r.totalOrderCountCell,
         r.allProductsListCell,
+        r.totalAmountCell,
       ];
     }
 
-    // 열 계산 (예: AH, AI, AJ, AK)
+    // 열 계산 (예: AH, AI, AJ, AK, AL)
     const colStart = outputStartColumn.toUpperCase();
-    const colEnd = getColumnLetter(columnLetterToNumber(colStart) + 3);
+    const colEnd = getColumnLetter(columnLetterToNumber(colStart) + 4);
     const writeRange = `${targetSheet}!${colStart}${startRow}:${colEnd}${lastRow}`;
 
     await sheets.spreadsheets.values.update({

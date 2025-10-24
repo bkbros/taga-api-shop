@@ -1,13 +1,13 @@
 // src/app/api/admin/customers/route.ts
 import { NextResponse } from "next/server";
 import axios, { AxiosError } from "axios";
-import { loadParams } from "@/lib/ssm";
+import { getAccessToken } from "@/lib/cafe24Auth";
 
 export async function GET(request: Request) {
   console.log("▶ Incoming URL:", request.url);
   try {
     // 토큰
-    const { access_token } = await loadParams(["access_token"]);
+    const access_token = await getAccessToken();
     console.log("▶ access_token:", access_token?.slice(0, 10), "…");
 
     // 파라미터
