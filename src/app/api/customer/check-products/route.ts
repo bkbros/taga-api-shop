@@ -1,7 +1,7 @@
 // src/app/api/customer/check-products/route.ts
 import { NextResponse } from "next/server";
 import axios from "axios";
-import { getAccessToken } from "@/lib/cafe24Auth";
+import { getAccessToken, forceRefresh } from "@/lib/cafe24Auth";
 
 /* -------------------- 타입 -------------------- */
 type Cafe24OrderItem = {
@@ -189,15 +189,24 @@ export async function GET(req: Request) {
     console.log(`[CHECK-PRODUCTS] member_id=${memberId}, products=${productNos.join(",")}, period=${fmtKST(startDate)}~${fmtKST(endDate)}`);
 
     // 토큰 자동 갱신 포함 로드
-    const access_token = await getAccessToken();
+    let access_token = await getAccessToken();
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID;
     if (!mallId) {
       return NextResponse.json({ error: "Missing NEXT_PUBLIC_CAFE24_MALL_ID" }, { status: 500 });
     }
 
-    const authHeaders: Record<string, string> = {
-      Authorization: `Bearer ${access_token}`,
-      "X-Cafe24-Api-Version": "2025-06-01",
+    // 401 에러 발생 시 토큰 갱신 후 재시도하는 헬퍼
+    const callWithTokenRetry = async <T>(fn: (token: string) => Promise<T>): Promise<T> => {
+      try {
+        return await fn(access_token);
+      } catch (error) {
+        if (axios.isAxiosError(error) && error.response?.status === 401) {
+          console.log('[TOKEN] 401 detected, refreshing token...');
+          access_token = await forceRefresh();
+          return await fn(access_token);
+        }
+        throw error;
+      }
     };
 
     // 주문 조회 (3개월 윈도우로 분할)
@@ -236,12 +245,17 @@ export async function GET(req: Request) {
           params.order_status = orderStatus;
         }
 
-        const resp = await withRetry(() =>
-          axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
-            headers: authHeaders,
-            params,
-            timeout: 15000,
-          })
+        const resp = await callWithTokenRetry((token) =>
+          withRetry(() =>
+            axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
+              headers: {
+                Authorization: `Bearer ${token}`,
+                "X-Cafe24-Api-Version": "2025-06-01",
+              },
+              params,
+              timeout: 15000,
+            })
+          )
         );
 
         const batch: Cafe24Order[] = resp.data?.orders ?? [];
