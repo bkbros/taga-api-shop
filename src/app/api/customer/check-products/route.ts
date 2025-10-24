@@ -259,6 +259,16 @@ export async function GET(req: Request) {
 
     console.log(`[ORDERS] Total orders fetched: ${allOrders.length}`);
 
+    // 디버깅: 첫 번째 주문의 필드 확인
+    if (allOrders.length > 0) {
+      const firstOrder = allOrders[0];
+      console.log('[DEBUG] First order keys:', Object.keys(firstOrder));
+      console.log('[DEBUG] First order amounts:', {
+        order_price_amount: firstOrder.order_price_amount,
+        // 다른 가능한 금액 필드들도 확인
+      });
+    }
+
     // 전체 주문 통계 및 전체 상품 목록 계산
     const totalOrderCount = allOrders.length;
     let totalQuantityAllProducts = 0;
@@ -268,7 +278,11 @@ export async function GET(req: Request) {
     for (const order of allOrders) {
       // 주문 금액 누적
       if (order.order_price_amount) {
-        totalAmount += Number(order.order_price_amount) || 0;
+        const amt = Number(order.order_price_amount) || 0;
+        console.log(`[DEBUG] Order ${order.order_id}: order_price_amount=${order.order_price_amount}, parsed=${amt}`);
+        totalAmount += amt;
+      } else {
+        console.log(`[DEBUG] Order ${order.order_id}: order_price_amount is missing or falsy`);
       }
 
       const items = order.items ?? [];
