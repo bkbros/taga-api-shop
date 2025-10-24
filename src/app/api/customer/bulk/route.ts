@@ -1,6 +1,6 @@
 // app/api/customer/bulk/route.ts
 import { NextResponse } from "next/server";
-import { getAccessToken } from "@/lib/cafe24Auth";
+import { loadParams } from "@/lib/ssm";
 import { AxiosResponse } from "axios";
 import { mapPool } from "@/lib/pool";
 import { RateLimiter, cafe24Get } from "@/lib/rate-limit";
@@ -388,7 +388,7 @@ export async function POST(req: Request) {
       console.log(`[BULK API] 대량 요청으로 청크 처리 적용: ${maxChunkSize}개씩`);
     }
 
-    const access_token = await getAccessToken();
+    const { access_token } = (await loadParams(["access_token"])) as { access_token: string };
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
 
     if (!mallId) {

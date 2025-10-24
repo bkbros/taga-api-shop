@@ -1,12 +1,12 @@
 // src/app/api/admin/products/route.ts
 import { NextResponse } from "next/server";
 import axios from "axios";
-import { getAccessToken } from "@/lib/cafe24Auth";
+import { loadParams } from "@/lib/ssm"; // SSM에서 꺼내올 유틸
 
 export async function GET() {
   try {
-    // 1) 토큰 가져오기 (자동 갱신 포함)
-    const access_token = await getAccessToken();
+    // 1) SSM에서 토큰 불러오기
+    const { access_token } = await loadParams(["access_token"]);
 
     // 2) API 호출
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;

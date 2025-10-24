@@ -1,7 +1,7 @@
 // src/app/api/customer/all-orders/route.ts
 import { NextResponse } from "next/server";
 import axios, { AxiosError } from "axios";
-import { getAccessToken } from "@/lib/cafe24Auth";
+import { loadParams } from "@/lib/ssm";
 
 /* -------------------- 타입 -------------------- */
 type Cafe24OrderItem = {
@@ -180,7 +180,7 @@ export async function GET(request: Request) {
     const memberId = "sda0125";
     const shopNo = 1;
 
-    const access_token = await getAccessToken();
+    const { access_token } = await loadParams(["access_token"]);
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID!;
     const headers = { Authorization: `Bearer ${access_token}` };
 

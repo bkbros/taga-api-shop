@@ -88,19 +88,12 @@ export async function GET(req: Request) {
     );
 
     const { access_token, refresh_token, expires_in } = tokenRes.data;
-
-    // 만료 시각 계산 (밀리초 단위, 60초 버퍼)
-    const EXPIRY_SKEW_SEC = 60;
-    const expiresAtMs = Date.now() + Math.max(0, (Number(expires_in) - EXPIRY_SKEW_SEC) * 1000);
-
-    console.log('[OAUTH] Saving tokens to SSM...');
-    // SSM에 저장 (cafe24Auth.ts와 동일한 키 이름 사용)
-    await Promise.all([
-      saveParam("access_token", access_token),
-      saveParam("refresh_token", refresh_token),
-      saveParam("access_token_expires_at", String(expiresAtMs)),
-    ]);
-    console.log('[OAUTH] Tokens saved successfully, expires at:', new Date(expiresAtMs).toISOString());
+    // SSM에 저장
+    await saveParam("access_token", access_token);
+    await saveParam("refresh_token", refresh_token);
+    // 만료 시각(Unix timestamp) 저장
+    const expiryTs = Math.floor(Date.now() / 1000) + Number(expires_in);
+    await saveParam("token_expiry", expiryTs.toString());
 
     // HTTP-only 쿠키 설정
     const response = NextResponse.redirect(`${process.env.NEXT_PUBLIC_BASE_URL}/success`);
