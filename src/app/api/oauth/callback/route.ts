@@ -101,17 +101,17 @@ export async function GET(req: Request) {
       expiresAt: expires_at
     });
 
-    // Cafe24는 expires_at을 timestamp(초 단위)로 반환
-    // 밀리초로 변환하고 60초 버퍼 적용
+    // Cafe24는 expires_at을 ISO 8601 문자열로 반환 (예: "2025-10-24T18:58:45.000")
+    // Date 객체로 파싱하고 60초 버퍼 적용
     const EXPIRY_SKEW_SEC = 60;
-    const expiresAtSec = Number(expires_at);
+    const expiresAtDate = new Date(expires_at);
 
-    if (!expiresAtSec || isNaN(expiresAtSec)) {
+    if (isNaN(expiresAtDate.getTime())) {
       console.error('[OAUTH] Invalid expires_at value:', expires_at);
       throw new Error('Invalid expires_at from Cafe24');
     }
 
-    const expiresAtMs = (expiresAtSec - EXPIRY_SKEW_SEC) * 1000;
+    const expiresAtMs = expiresAtDate.getTime() - (EXPIRY_SKEW_SEC * 1000);
 
     console.log('[OAUTH] Saving tokens to SSM...');
     // SSM에 저장
@@ -126,8 +126,8 @@ export async function GET(req: Request) {
     // HTTP-only 쿠키 설정
     const response = NextResponse.redirect(`${process.env.NEXT_PUBLIC_BASE_URL}/success`);
     // access_token 쿠키: 전체 경로
-    // maxAge는 초 단위이므로 expiresAtSec - 현재시간(초) 사용
-    const maxAgeSec = Math.max(0, expiresAtSec - Math.floor(Date.now() / 1000));
+    // maxAge는 초 단위이므로 (만료시간 - 현재시간) / 1000
+    const maxAgeSec = Math.max(0, Math.floor((expiresAtDate.getTime() - Date.now()) / 1000));
     response.cookies.set("access_token", access_token, {
       httpOnly: true,
       secure: true,
