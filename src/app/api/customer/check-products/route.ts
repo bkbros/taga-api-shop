@@ -247,6 +247,31 @@ export async function GET(req: Request) {
         );
 
         const batch: Cafe24Order[] = resp.data?.orders ?? [];
+
+        // 각 주문에 대해 상세 정보 조회하여 정확한 금액 가져오기
+        for (const order of batch) {
+          try {
+            const detailResp = await withRetry(() =>
+              axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders/${order.order_id}`, {
+                headers: authHeaders,
+                params: { shop_no: shopNo },
+                timeout: 10000,
+              })
+            );
+
+            const detailOrder = detailResp.data?.order;
+            if (detailOrder) {
+              // 상세 조회의 금액 정보를 원본 주문 객체에 추가
+              order.actual_order_amount = detailOrder.actual_order_amount;
+              order.payment_amount = detailOrder.payment_amount;
+              order.initial_order_amount = detailOrder.initial_order_amount;
+            }
+          } catch (e) {
+            console.warn(`[WARN] Failed to fetch order detail for ${order.order_id}:`, e);
+            // 실패해도 계속 진행 (목록 조회의 금액 정보 사용)
+          }
+        }
+
         allOrders.push(...batch);
 
         console.log(`[ORDERS] Fetched ${batch.length} orders (offset=${offset})`);
@@ -261,6 +286,17 @@ export async function GET(req: Request) {
 
     console.log(`[ORDERS] Total orders fetched: ${allOrders.length}`);
 
+    // 디버깅: 첫 번째 주문의 금액 필드 확인
+    if (allOrders.length > 0) {
+      const firstOrder = allOrders[0];
+      console.log(`[DEBUG] First order amount fields:`, {
+        order_id: firstOrder.order_id,
+        actual_order_amount: firstOrder.actual_order_amount,
+        payment_amount: firstOrder.payment_amount,
+        initial_order_amount: firstOrder.initial_order_amount,
+      });
+    }
+
     // 전체 주문 통계 및 전체 상품 목록 계산
     const totalOrderCount = allOrders.length;
     let totalQuantityAllProducts = 0;
@@ -271,6 +307,7 @@ export async function GET(req: Request) {
       // 주문 금액 누적 (actual_order_amount 사용)
       const amount = order.actual_order_amount || order.payment_amount || "0";
       const amt = Number(amount) || 0;
+      console.log(`[DEBUG] Order ${order.order_id}: amount=${amount}, parsed=${amt}`);
       totalAmount += amt;
 
       const items = order.items ?? [];
