@@ -1,7 +1,7 @@
 // src/app/api/customer/check-products/route.ts
 import { NextResponse } from "next/server";
-import axios from "axios";
-import { getAccessToken } from "@/lib/cafe24Auth";
+import axios, { isAxiosError } from "axios";
+import { getAccessToken, forceRefresh } from "@/lib/cafe24Auth";
 
 /* -------------------- 타입 -------------------- */
 type Cafe24OrderItem = {
@@ -189,15 +189,35 @@ export async function GET(req: Request) {
     console.log(`[CHECK-PRODUCTS] member_id=${memberId}, products=${productNos.join(",")}, period=${fmtKST(startDate)}~${fmtKST(endDate)}`);
 
     // 토큰 자동 갱신 포함 로드
-    const access_token = await getAccessToken();
+    let accessToken = await getAccessToken();
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID;
     if (!mallId) {
       return NextResponse.json({ error: "Missing NEXT_PUBLIC_CAFE24_MALL_ID" }, { status: 500 });
     }
 
-    const authHeaders: Record<string, string> = {
-      Authorization: `Bearer ${access_token}`,
-      "X-Cafe24-Api-Version": "2025-06-01",
+    // ✅ 401 시 자동 새토큰 후 1회 재시도하는 헬퍼
+    const callOrdersAPI = async (url: string, params: Record<string, string | number>) => {
+      const doCall = async (token: string) =>
+        axios.get(url, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "X-Cafe24-Api-Version": "2025-06-01",
+          },
+          params,
+          timeout: 15000,
+        });
+
+      try {
+        return await doCall(accessToken);
+      } catch (err: unknown) {
+        if (isAxiosError(err) && err.response?.status === 401) {
+          // 만료 → 강제 리프레시 후 1회 재시도
+          console.log('[CHECK-PRODUCTS] 401 detected, refreshing token...');
+          accessToken = await forceRefresh();
+          return await doCall(accessToken);
+        }
+        throw err;
+      }
     };
 
     // 주문 조회 (3개월 윈도우로 분할)
@@ -237,11 +257,7 @@ export async function GET(req: Request) {
         }
 
         const resp = await withRetry(() =>
-          axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
-            headers: authHeaders,
-            params,
-            timeout: 15000,
-          })
+          callOrdersAPI(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, params)
         );
 
         const batch: Cafe24Order[] = resp.data?.orders ?? [];
