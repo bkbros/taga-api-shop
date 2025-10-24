@@ -72,6 +72,7 @@ export async function GET(req: Request) {
 
     const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
 
+    console.log('[OAUTH] Requesting token from Cafe24...');
     const tokenRes = await axios.post(
       `https://${mallId}.cafe24api.com/api/v2/oauth/token`,
       new URLSearchParams({
@@ -87,11 +88,30 @@ export async function GET(req: Request) {
       },
     );
 
+    console.log('[OAUTH] Token response received:', {
+      status: tokenRes.status,
+      dataKeys: Object.keys(tokenRes.data || {})
+    });
+
     const { access_token, refresh_token, expires_in } = tokenRes.data;
+
+    console.log('[OAUTH] Token data received:', {
+      hasAccessToken: !!access_token,
+      hasRefreshToken: !!refresh_token,
+      expiresIn: expires_in,
+      expiresInType: typeof expires_in
+    });
 
     // 만료 시각 계산 (밀리초 단위, 60초 버퍼)
     const EXPIRY_SKEW_SEC = 60;
-    const expiresAtMs = Date.now() + Math.max(0, (Number(expires_in) - EXPIRY_SKEW_SEC) * 1000);
+    const expiresInSec = Number(expires_in);
+
+    if (!expiresInSec || isNaN(expiresInSec)) {
+      console.error('[OAUTH] Invalid expires_in value:', expires_in);
+      throw new Error('Invalid expires_in from Cafe24');
+    }
+
+    const expiresAtMs = Date.now() + Math.max(0, (expiresInSec - EXPIRY_SKEW_SEC) * 1000);
 
     console.log('[OAUTH] Saving tokens to SSM...');
     // SSM에 저장 (cafe24Auth.ts와 동일한 키 이름 사용)
@@ -100,7 +120,9 @@ export async function GET(req: Request) {
       saveParam("refresh_token", refresh_token),
       saveParam("access_token_expires_at", String(expiresAtMs)),
     ]);
-    console.log('[OAUTH] ✓ Tokens saved, expires at:', new Date(expiresAtMs).toISOString());
+    console.log('[OAUTH] ✓ Tokens saved successfully');
+    console.log('[OAUTH] ✓ Expires in', expiresInSec, 'seconds');
+    console.log('[OAUTH] ✓ Expires at:', new Date(expiresAtMs).toISOString());
 
     // HTTP-only 쿠키 설정
     const response = NextResponse.redirect(`${process.env.NEXT_PUBLIC_BASE_URL}/success`);
