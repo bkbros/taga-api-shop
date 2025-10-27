@@ -269,7 +269,7 @@ export default function SheetsVerification() {
             </div>
           </div>
           <p className="text-xs text-gray-600 mt-2">
-            연락처가 없으면 회원 ID로 검색합니다
+            연락처로 먼저 검색하고, 결과가 없으면 회원 ID로 재검색합니다
           </p>
         </div>
 

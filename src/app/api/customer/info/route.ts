@@ -588,11 +588,17 @@ export async function GET(req: Request) {
       "X-Cafe24-Api-Version": "2025-06-01",
     };
 
-    /** 1) 항상 member_id 먼저 → 실패 시 cellphone 폴백 **/
+    /** 1) 항상 cellphone 먼저 → 실패 시 member_id 폴백 **/
     const strategies: Strategy[] = [];
     const isNumericOnly = /^\d+$/.test(primary);
 
-    // member_id 후보 (항상 먼저)
+    // cellphone 우선 (phone_hint 우선, 없으면 primary에서 추론)
+    const phoneForPrimary = phoneHint ?? normalizeKoreanCellphone(primary);
+    if (phoneForPrimary) {
+      strategies.push({ name: "cellphone", params: { limit: 1, cellphone: phoneForPrimary } });
+    }
+
+    // member_id 폴백
     if (isNumericOnly) {
       const idCandidates = guess ? [primary, `${primary}@k`, `${primary}@n`] : [primary];
       for (const cand of idCandidates) {
@@ -600,12 +606,6 @@ export async function GET(req: Request) {
       }
     } else {
       strategies.push({ name: "member_id", params: { limit: 1, member_id: primary } });
-    }
-
-    // cellphone 폴백 (phone_hint 우선, 없으면 primary에서 추론)
-    const phoneForFallback = phoneHint ?? normalizeKoreanCellphone(primary);
-    if (phoneForFallback) {
-      strategies.push({ name: "cellphone", params: { limit: 1, cellphone: phoneForFallback } });
     }
 
     let found: Customer | null = null;
