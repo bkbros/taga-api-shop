@@ -33,6 +33,7 @@ type BatchResponse = {
   success: boolean;
   message: string;
   statistics: VerificationStats;
+  errorRows?: number[]; // 오류 발생한 행 번호 목록
   nextStartRow: number | null;
   processedRange?: { startRow: number; endRow: number };
   used?: { limit: number; concurrency: number };
@@ -54,6 +55,7 @@ export default function ProductPurchaseCheck() {
     notPurchased: 0,
     errors: 0,
   });
+  const [allErrorRows, setAllErrorRows] = useState<number[]>([]); // 전체 오류 행 누적
 
   // 폼 상태 (기본값 포함)
   const [spreadsheetId, setSpreadsheetId] = useState("1i4zNovtQXwTz0wBUN6chhlqHe3yM_gVRwtC0H73stIg");
@@ -90,6 +92,7 @@ export default function ProductPurchaseCheck() {
     setLogs([]);
     setLastBatch(null);
     setAggStats({ total: 0, hasPurchased: 0, notPurchased: 0, errors: 0 });
+    setAllErrorRows([]);
   }, []);
 
   const handleCancel = useCallback(() => {
@@ -156,6 +159,66 @@ export default function ProductPurchaseCheck() {
     ],
   );
 
+  // 오류 행만 재시도
+  const handleRetryErrors = useCallback(async () => {
+    if (allErrorRows.length === 0) {
+      setError("재시도할 오류 행이 없습니다");
+      return;
+    }
+
+    setError(null);
+    cancelRef.current = false;
+    setLoading(true);
+    addLog(`🔄 오류 행 재시도 시작: ${allErrorRows.length}개 행`);
+    addLog(`재시도 행 번호: ${allErrorRows.join(", ")}`);
+
+    const retriedRows = new Set<number>();
+    const remainingErrors: number[] = [];
+
+    try {
+      // 오류 행들을 배치로 나눠서 처리
+      for (let i = 0; i < allErrorRows.length; i += limit) {
+        if (cancelRef.current) break;
+
+        const chunk = allErrorRows.slice(i, i + limit);
+        const minRow = Math.min(...chunk);
+
+        addLog(`요청 → 재시도 배치 (행 ${minRow}부터 ${chunk.length}개)`);
+
+        // 해당 범위를 다시 처리
+        const batch = await runOneBatch(minRow);
+        setLastBatch(batch);
+
+        addLog(batch.message);
+
+        // 여전히 오류인 행 수집
+        if (batch.errorRows && batch.errorRows.length > 0) {
+          remainingErrors.push(...batch.errorRows);
+          addLog(`⚠️ 여전히 오류: ${batch.errorRows.join(", ")}`);
+        }
+
+        chunk.forEach(row => retriedRows.add(row));
+
+        await new Promise(r => setTimeout(r, 500));
+      }
+
+      setAllErrorRows(remainingErrors);
+
+      const successCount = retriedRows.size - remainingErrors.length;
+      addLog(
+        cancelRef.current
+          ? "재시도가 중단되었습니다."
+          : `✅ 재시도 완료! 성공: ${successCount}개, 여전히 실패: ${remainingErrors.length}개`
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
+      addLog(`오류: ${msg}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [allErrorRows, limit, runOneBatch, addLog]);
+
   const handleRunAll = useCallback(async () => {
     // 검증
     if (!spreadsheetId) {
@@ -183,6 +246,7 @@ export default function ProductPurchaseCheck() {
     setLogs([]);
     setLastBatch(null);
     setAggStats({ total: 0, hasPurchased: 0, notPurchased: 0, errors: 0 });
+    setAllErrorRows([]); // 오류 행 초기화
 
     addLog(
       `배치 시작: startRow=${startRow}, limit=${limit}, concurrency=${concurrency}, shopNo=${shopNo}, productNos=${productNos}`,
@@ -204,8 +268,14 @@ export default function ProductPurchaseCheck() {
         if (batch.used) addLog(`사용한 설정: limit=${batch.used.limit}, concurrency=${batch.used.concurrency}`);
         if (batch.processedRange) {
           const colStart = outputStartColumn.toUpperCase();
-          const colEnd = getColumnLetter(columnLetterToNumber(colStart) + 3);
+          const colEnd = getColumnLetter(columnLetterToNumber(colStart) + 4);
           addLog(`시트 반영 범위: ${colStart}${batch.processedRange.startRow}~${colEnd}${batch.processedRange.endRow}`);
+        }
+
+        // 오류 행 수집
+        if (batch.errorRows && batch.errorRows.length > 0) {
+          setAllErrorRows(prev => [...prev, ...batch.errorRows!]);
+          addLog(`⚠️ 오류 발생 행: ${batch.errorRows.join(", ")}`);
         }
 
         // 누적 통계 업데이트
@@ -481,6 +551,17 @@ export default function ProductPurchaseCheck() {
           {loading ? "중단" : "초기화"}
         </button>
       </div>
+
+      {/* 오류 재시도 버튼 */}
+      {aggStats.errors > 0 && !loading && (
+        <button
+          onClick={handleRetryErrors}
+          disabled={allErrorRows.length === 0}
+          className="w-full py-3 px-4 rounded-md text-white font-semibold bg-orange-600 hover:bg-orange-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
+        >
+          🔄 오류 행 재시도 ({allErrorRows.length}개)
+        </button>
+      )}
 
       {/* 진행 상태 */}
       <div className="mt-6 grid grid-cols-2 md:grid-cols-4 gap-4">

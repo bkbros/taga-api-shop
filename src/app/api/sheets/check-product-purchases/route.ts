@@ -372,13 +372,14 @@ export async function POST(req: Request) {
       requestBody: { values: rowsMatrix },
     });
 
-    // 통계
+    // 통계 및 오류 행 정보
+    const errorRows = outputs.filter(o => o.hadError).map(o => o.rowIndex);
     const stats = {
       total: outputs.length,
       hasPurchased: outputs.filter(o => o.purchasedProductNamesCell && o.purchasedProductNamesCell !== "없음")
         .length,
       notPurchased: outputs.filter(o => o.purchasedProductNamesCell === "없음").length,
-      errors: outputs.filter(o => o.hadError).length,
+      errors: errorRows.length,
     };
 
     const hasMore = idRows.length >= limit;
@@ -388,6 +389,7 @@ export async function POST(req: Request) {
       success: true,
       message: `${stats.total}개 회원 처리 완료 (구매: ${stats.hasPurchased}, 미구매: ${stats.notPurchased}, 오류: ${stats.errors})`,
       statistics: stats,
+      errorRows, // 오류 발생한 행 번호 목록
       nextStartRow,
       processedRange: { startRow, endRow: lastRow },
       used: { limit, concurrency },
