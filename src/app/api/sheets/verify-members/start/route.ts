@@ -404,7 +404,6 @@ type InfoSuccess = {
   memberGrade?: string;
   memberGradeNo?: number;
   joinDate?: string;
-  totalOrders: number;
 };
 type InfoError = { error: string; details?: unknown };
 
@@ -420,7 +419,6 @@ type RowOutput = {
   isRegisteredEmoji: "⭕" | "❌";
   gradeNoCell: number | "";
   joinDateCell: string;
-  orders3mCell: number | "";
   hadError: boolean;
 };
 
@@ -552,7 +550,6 @@ export async function POST(req: Request) {
         let isRegisteredEmoji: "⭕" | "❌" = "❌";
         let gradeNoCell: number | "" = "";
         let joinDateCell = "";
-        let orders3mCell: number | "" = "";
         let hadError = false;
 
         const normalizedPhone = normalizeKoreanCellphone(member.phone);
@@ -568,7 +565,6 @@ export async function POST(req: Request) {
             isRegisteredEmoji,
             gradeNoCell,
             joinDateCell,
-            orders3mCell,
             hadError,
           };
         }
@@ -595,7 +591,6 @@ export async function POST(req: Request) {
                 isRegisteredEmoji = "⭕";
                 gradeNoCell = typeof payload.memberGradeNo === "number" ? payload.memberGradeNo : "";
                 joinDateCell = toDateCell(payload.joinDate);
-                orders3mCell = typeof payload.totalOrders === "number" ? payload.totalOrders : 0;
                 found = true;
               }
             } else if (resp1.status !== 404) {
@@ -624,7 +619,6 @@ export async function POST(req: Request) {
                 isRegisteredEmoji = "⭕";
                 gradeNoCell = typeof payload.memberGradeNo === "number" ? payload.memberGradeNo : "";
                 joinDateCell = toDateCell(payload.joinDate);
-                orders3mCell = typeof payload.totalOrders === "number" ? payload.totalOrders : 0;
                 found = true;
               }
             } else if (resp2.status !== 404) {
@@ -647,7 +641,6 @@ export async function POST(req: Request) {
           isRegisteredEmoji,
           gradeNoCell,
           joinDateCell,
-          orders3mCell,
           hadError,
         };
       };
@@ -655,10 +648,9 @@ export async function POST(req: Request) {
 
     const outputs = await runPool<RowOutput>(tasks, concurrency);
 
-    // 시트 쓰기 AC~AG
+    // 시트 쓰기 AC~AF (구매건수 제거)
     const lastRow = inputs.length > 0 ? inputs[inputs.length - 1].rowIndex : endRow;
     const rowsMatrix: (string | number)[][] = Array.from({ length: Math.max(0, lastRow - startRow + 1) }, () => [
-      "",
       "",
       "",
       "",
@@ -668,13 +660,13 @@ export async function POST(req: Request) {
     for (const r of outputs) {
       const idx = r.rowIndex - startRow; // 0-based
       if (idx < 0 || idx >= rowsMatrix.length) continue;
-      rowsMatrix[idx] = [r.memberId, r.isRegisteredEmoji, r.gradeNoCell, r.joinDateCell, r.orders3mCell];
+      rowsMatrix[idx] = [r.memberId, r.isRegisteredEmoji, r.gradeNoCell, r.joinDateCell];
     }
 
     if (rowsMatrix.length > 0) {
       await sheets.spreadsheets.values.update({
         spreadsheetId,
-        range: `${targetSheet}!AC${startRow}:AG${startRow + rowsMatrix.length - 1}`,
+        range: `${targetSheet}!AC${startRow}:AF${startRow + rowsMatrix.length - 1}`,
         valueInputOption: "RAW",
         requestBody: { values: rowsMatrix },
       });
