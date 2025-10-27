@@ -7,22 +7,34 @@ import { useState, useEffect } from "react";
 export default function Navbar() {
   const pathname = usePathname();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // Navbar를 보여주지 않을 페이지 목록
+  const hideNavbarPages = ["/", "/error"];
 
   useEffect(() => {
     const checkAuth = async () => {
+      setIsLoading(true);
       try {
         const res = await fetch("/api/tokens");
         setIsAuthenticated(res.ok);
       } catch {
         setIsAuthenticated(false);
+      } finally {
+        setIsLoading(false);
       }
     };
 
     checkAuth();
   }, [pathname]); // pathname이 바뀔 때마다 다시 체크
 
-  // 인증되지 않았으면 Navbar 숨김
-  if (!isAuthenticated) {
+  // 특정 페이지에서는 Navbar 숨김
+  if (hideNavbarPages.includes(pathname)) {
+    return null;
+  }
+
+  // 로딩 중이거나 인증되지 않았으면 Navbar 숨김
+  if (isLoading || !isAuthenticated) {
     return null;
   }
 
