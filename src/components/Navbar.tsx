@@ -2,9 +2,29 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useState, useEffect } from "react";
 
 export default function Navbar() {
   const pathname = usePathname();
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const res = await fetch("/api/tokens");
+        setIsAuthenticated(res.ok);
+      } catch {
+        setIsAuthenticated(false);
+      }
+    };
+
+    checkAuth();
+  }, [pathname]); // pathname이 바뀔 때마다 다시 체크
+
+  // 인증되지 않았으면 Navbar 숨김
+  if (!isAuthenticated) {
+    return null;
+  }
 
   return (
     <nav className="bg-white border-b border-gray-200 shadow-sm">
