@@ -556,7 +556,7 @@ export async function POST(req: Request) {
         let hadError = false;
 
         const normalizedPhone = normalizeKoreanCellphone(member.phone);
-        const queryUserId = member.existingId || normalizedPhone || "";
+        const queryUserId = normalizedPhone || member.existingId || "";
 
         if (!queryUserId) {
           // 조회 자체가 불가
