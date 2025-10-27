@@ -556,10 +556,9 @@ export async function POST(req: Request) {
         let hadError = false;
 
         const normalizedPhone = normalizeKoreanCellphone(member.phone);
-        const queryUserId = normalizedPhone || member.existingId || "";
 
-        if (!queryUserId) {
-          // 조회 자체가 불가
+        if (!normalizedPhone && !member.existingId) {
+          // 조회 자체가 불가 (전화번호도 회원ID도 없음)
           hadError = true;
           return {
             rowIndex: member.rowIndex,
@@ -573,33 +572,66 @@ export async function POST(req: Request) {
         }
 
         try {
-          const params = new URLSearchParams({
-            user_id: queryUserId,
-            period: "3months",
-            shop_no: String(shopNoNum),
-            guess: "1",
-          });
-          if (normalizedPhone) params.set("phone_hint", normalizedPhone); // 👈 항상 phone_hint 전달
+          let found = false;
 
-          const resp = await fetch(`${origin}/api/customer/info?${params.toString()}`, { method: "GET" });
+          // 1차: 전화번호로 검색
+          if (normalizedPhone) {
+            const params1 = new URLSearchParams({
+              user_id: normalizedPhone,
+              period: "3months",
+              shop_no: String(shopNoNum),
+              guess: "1",
+            });
+            params1.set("phone_hint", normalizedPhone);
 
-          if (!resp.ok) {
-            if (resp.status === 404) {
-              isRegisteredEmoji = "❌";
-            } else {
+            const resp1 = await fetch(`${origin}/api/customer/info?${params1.toString()}`, { method: "GET" });
+
+            if (resp1.ok) {
+              const payload: InfoSuccess | InfoError = await resp1.json();
+              if (!isInfoError(payload)) {
+                memberId = payload.memberId ?? "";
+                isRegisteredEmoji = "⭕";
+                gradeNoCell = typeof payload.memberGradeNo === "number" ? payload.memberGradeNo : "";
+                joinDateCell = toDateCell(payload.joinDate);
+                orders3mCell = typeof payload.totalOrders === "number" ? payload.totalOrders : 0;
+                found = true;
+              }
+            } else if (resp1.status !== 404) {
+              // 404가 아닌 에러는 hadError 처리
               hadError = true;
             }
-          } else {
-            const payload: InfoSuccess | InfoError = await resp.json();
-            if (isInfoError(payload)) {
+          }
+
+          // 2차: 전화번호로 못 찾았고 회원 ID가 있으면 재시도
+          if (!found && member.existingId) {
+            const params2 = new URLSearchParams({
+              user_id: member.existingId,
+              period: "3months",
+              shop_no: String(shopNoNum),
+              guess: "1",
+            });
+            if (normalizedPhone) params2.set("phone_hint", normalizedPhone);
+
+            const resp2 = await fetch(`${origin}/api/customer/info?${params2.toString()}`, { method: "GET" });
+
+            if (resp2.ok) {
+              const payload: InfoSuccess | InfoError = await resp2.json();
+              if (!isInfoError(payload)) {
+                memberId = payload.memberId ?? "";
+                isRegisteredEmoji = "⭕";
+                gradeNoCell = typeof payload.memberGradeNo === "number" ? payload.memberGradeNo : "";
+                joinDateCell = toDateCell(payload.joinDate);
+                orders3mCell = typeof payload.totalOrders === "number" ? payload.totalOrders : 0;
+                found = true;
+              }
+            } else if (resp2.status !== 404) {
               hadError = true;
-            } else {
-              memberId = payload.memberId ?? "";
-              isRegisteredEmoji = "⭕";
-              gradeNoCell = typeof payload.memberGradeNo === "number" ? payload.memberGradeNo : "";
-              joinDateCell = toDateCell(payload.joinDate);
-              orders3mCell = typeof payload.totalOrders === "number" ? payload.totalOrders : 0;
             }
+          }
+
+          // 둘 다 404면 미가입
+          if (!found && !hadError) {
+            isRegisteredEmoji = "❌";
           }
         } catch {
           hadError = true;
