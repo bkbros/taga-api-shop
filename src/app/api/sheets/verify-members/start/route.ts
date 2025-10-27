@@ -557,6 +557,8 @@ export async function POST(req: Request) {
 
         const normalizedPhone = normalizeKoreanCellphone(member.phone);
 
+        console.log(`[DEBUG] Row ${member.rowIndex}: phone="${member.phone}", existingId="${member.existingId}", normalizedPhone="${normalizedPhone}"`);
+
         if (!normalizedPhone && !member.existingId) {
           // 조회 자체가 불가 (전화번호도 회원ID도 없음)
           hadError = true;
@@ -604,6 +606,7 @@ export async function POST(req: Request) {
 
           // 2차: 전화번호로 못 찾았고 회원 ID가 있으면 재시도
           if (!found && member.existingId) {
+            console.log(`[DEBUG] 2차 검색 시작: 회원ID="${member.existingId}"`);
             const params2 = new URLSearchParams({
               user_id: member.existingId,
               period: "3months",
