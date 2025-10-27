@@ -170,10 +170,7 @@ export default function ProductPurchaseCheck() {
       setError("출력 시작 열을 입력하세요 (예: AH)");
       return;
     }
-    if (!productNos) {
-      setError("상품 번호를 입력하세요 (쉼표로 구분)");
-      return;
-    }
+    // productNos는 선택사항 (비어있으면 전체 구매 기록만 조회)
     if (!useEnvCredentials && !serviceAccountKey) {
       setError("서비스 계정 키를 입력하세요");
       return;
@@ -339,15 +336,17 @@ export default function ProductPurchaseCheck() {
           <h3 className="text-lg font-semibold mb-3">📦 상품 조회 설정</h3>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">상품 번호 *</label>
+            <label className="block text-sm font-medium text-gray-700 mb-2">상품 번호 (선택)</label>
             <input
               type="text"
               value={productNos}
               onChange={e => setProductNos(e.target.value)}
-              placeholder="123,456,789"
+              placeholder="123,456,789 (비우면 전체 구매 기록 조회)"
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
-            <p className="text-xs text-gray-500 mt-1">확인할 상품 번호들을 쉼표로 구분 (예: 123,456,789)</p>
+            <p className="text-xs text-gray-500 mt-1">
+              확인할 상품 번호들을 쉼표로 구분 (예: 123,456,789) · 비우면 전체 구매 기록만 조회
+            </p>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3">

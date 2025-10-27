@@ -162,9 +162,7 @@ export async function POST(req: Request) {
     if (!outputStartColumn) {
       return NextResponse.json({ error: "outputStartColumn이 필요합니다 (예: 'AH')" }, { status: 400 });
     }
-    if (!productNos) {
-      return NextResponse.json({ error: "productNos가 필요합니다 (예: '123,456,789')" }, { status: 400 });
-    }
+    // productNos는 선택사항 (없으면 전체 구매 기록만 조회)
 
     const targetSheet = (sheetName || "").trim() || "Sheet1";
     const shopNoNum = Number.isInteger(Number(shopNo)) ? Number(shopNo) : 1;
@@ -241,9 +239,10 @@ export async function POST(req: Request) {
       for (let attempt = 0; attempt < 3; attempt++) {
         const params = new URLSearchParams({
           member_id: memberId,
-          product_nos: productNos,
           shop_no: String(shopNoNum),
         });
+        // productNos가 있을 때만 추가
+        if (productNos) params.append("product_nos", productNos);
         if (startDate) params.append("start_date", startDate);
         if (endDate) params.append("end_date", endDate);
         if (orderStatus) params.append("order_status", orderStatus);

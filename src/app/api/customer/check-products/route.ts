@@ -162,7 +162,7 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, baseDelay = 10
  *
  * Query Parameters:
  * - member_id (required): 회원 로그인 아이디
- * - product_nos (required): 확인할 상품 번호들 (쉼표로 구분, 예: "123,456,789")
+ * - product_nos (optional): 확인할 상품 번호들 (쉼표로 구분, 예: "123,456,789") - 없으면 전체 구매 기록만 조회
  * - start_date (optional): 시작일 (YYYY-MM-DD, 기본: 3개월 전)
  * - end_date (optional): 종료일 (YYYY-MM-DD, 기본: 오늘)
  * - shop_no (optional): 쇼핑몰 번호 (기본: 1)
@@ -184,20 +184,17 @@ export async function GET(req: Request) {
     if (!memberId) {
       return NextResponse.json({ error: "member_id parameter is required" }, { status: 400 });
     }
-    if (!productNosParam) {
-      return NextResponse.json({ error: "product_nos parameter is required (comma-separated)" }, { status: 400 });
-    }
 
-    // 상품 번호 파싱
-    const productNos = productNosParam
-      .split(",")
-      .map(s => s.trim())
-      .filter(Boolean)
-      .map(Number)
-      .filter(n => !isNaN(n));
-
-    if (productNos.length === 0) {
-      return NextResponse.json({ error: "Invalid product_nos format" }, { status: 400 });
+    // 상품 번호 파싱 (선택사항)
+    const productNos: number[] = [];
+    if (productNosParam) {
+      const parsed = productNosParam
+        .split(",")
+        .map(s => s.trim())
+        .filter(Boolean)
+        .map(Number)
+        .filter(n => !isNaN(n));
+      productNos.push(...parsed);
     }
 
     // 날짜 범위 설정
@@ -206,7 +203,7 @@ export async function GET(req: Request) {
     const startDate = startDateParam ? new Date(startDateParam) : threeMonthsAgo;
     const endDate = endDateParam ? new Date(endDateParam) : now;
 
-    console.log(`[CHECK-PRODUCTS] member_id=${memberId}, products=${productNos.join(",")}, period=${fmtKST(startDate)}~${fmtKST(endDate)}`);
+    console.log(`[CHECK-PRODUCTS] member_id=${memberId}, products=${productNos.length > 0 ? productNos.join(",") : "전체"}, period=${fmtKST(startDate)}~${fmtKST(endDate)}`);
 
     // 토큰 자동 갱신 포함 로드
     const access_token = await getAccessToken();
@@ -356,33 +353,36 @@ export async function GET(req: Request) {
 
     const allProducts = Array.from(allProductsMap.values());
 
-    // 특정 상품이 포함된 주문 필터링
+    // 특정 상품이 포함된 주문 필터링 (productNos가 있을 때만)
     const productSet = new Set(productNos);
     const purchasedProducts: CustomerProductCheck["purchasedProducts"] = [];
     const orderIdSet = new Set<string>();
 
-    // 디버깅: 첫 번째 주문의 아이템 확인
-    if (allOrders.length > 0) {
-      const firstOrder = allOrders[0];
-      const itemProductNos = (firstOrder.items ?? []).map(it => it.product_no);
-      console.log(`[DEBUG] First order items product_nos: ${itemProductNos.join(", ")}`);
-      console.log(`[DEBUG] Looking for product_nos: ${Array.from(productSet).join(", ")}`);
-    }
+    // productNos가 있을 때만 필터링
+    if (productNos.length > 0) {
+      // 디버깅: 첫 번째 주문의 아이템 확인
+      if (allOrders.length > 0) {
+        const firstOrder = allOrders[0];
+        const itemProductNos = (firstOrder.items ?? []).map(it => it.product_no);
+        console.log(`[DEBUG] First order items product_nos: ${itemProductNos.join(", ")}`);
+        console.log(`[DEBUG] Looking for product_nos: ${Array.from(productSet).join(", ")}`);
+      }
 
-    for (const order of allOrders) {
-      const items = order.items ?? [];
-      for (const item of items) {
-        if (item.product_no && productSet.has(item.product_no)) {
-          console.log(`[MATCH] Found product ${item.product_no} in order ${order.order_id}`);
-          purchasedProducts.push({
-            productNo: item.product_no,
-            productCode: item.product_code,
-            productName: item.product_name,
-            orderId: order.order_id,
-            orderDate: order.created_date,
-            quantity: item.quantity ?? 0,
-          });
-          orderIdSet.add(order.order_id);
+      for (const order of allOrders) {
+        const items = order.items ?? [];
+        for (const item of items) {
+          if (item.product_no && productSet.has(item.product_no)) {
+            console.log(`[MATCH] Found product ${item.product_no} in order ${order.order_id}`);
+            purchasedProducts.push({
+              productNo: item.product_no,
+              productCode: item.product_code,
+              productName: item.product_name,
+              orderId: order.order_id,
+              orderDate: order.created_date,
+              quantity: item.quantity ?? 0,
+            });
+            orderIdSet.add(order.order_id);
+          }
         }
       }
     }
