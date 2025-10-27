@@ -6,6 +6,7 @@ import axios from "axios";
 type SheetMember = {
   name: string;
   phone: string;
+  userId: string;
   rowIndex: number; // 행 번호 추적용
 };
 
@@ -19,7 +20,6 @@ type VerificationResult = {
     userName?: string;
     memberGrade: number;
     joinDate?: string;
-    totalOrders: number;
   };
   error?: string;
 };
@@ -35,7 +35,10 @@ export async function POST(req: Request) {
       spreadsheetId,
       sheetName: requestSheetName = "Smore-5pURyYjo8l-HRG",
       serviceAccountKey,
-      useEnvCredentials = false
+      useEnvCredentials = false,
+      nameColumn = "I",
+      phoneColumn = "J",
+      userIdColumn = "H"
     } = body;
 
     sheetName = requestSheetName; // 요청된 값으로 업데이트
@@ -44,7 +47,10 @@ export async function POST(req: Request) {
       spreadsheetId,
       sheetName,
       useEnvCredentials,
-      hasServiceAccountKey: !!serviceAccountKey
+      hasServiceAccountKey: !!serviceAccountKey,
+      nameColumn,
+      phoneColumn,
+      userIdColumn
     });
 
     if (!spreadsheetId) {
@@ -105,11 +111,12 @@ export async function POST(req: Request) {
     const sheets = google.sheets({ version: 'v4', auth });
     console.log("Google Sheets 클라이언트 생성 완료");
 
-    // 1. 스프레드시트에서 I, J열 (이름, 연락처) 읽기
-    console.log(`스프레드시트 데이터 읽기 시작: ${sheetName}!I:J`);
+    // 1. 스프레드시트에서 이름, 연락처, 회원ID 열 읽기
+    const readRange = `${sheetName}!${userIdColumn}:${phoneColumn}`; // H:J (회원ID, 이름, 연락처)
+    console.log(`스프레드시트 데이터 읽기 시작: ${readRange}`);
     const sourceResponse = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${sheetName}!I:J`, // I: 이름, J: 연락처
+      range: readRange,
     });
     console.log("스프레드시트 데이터 읽기 성공");
 
@@ -120,12 +127,18 @@ export async function POST(req: Request) {
       }, { status: 400 });
     }
 
+    // 컬럼 인덱스 계산 (H=0, I=1, J=2)
+    const userIdColIndex = userIdColumn.charCodeAt(0) - userIdColumn.charCodeAt(0); // 0
+    const nameColIndex = nameColumn.charCodeAt(0) - userIdColumn.charCodeAt(0); // 1
+    const phoneColIndex = phoneColumn.charCodeAt(0) - userIdColumn.charCodeAt(0); // 2
+
     // 헤더 제외하고 회원 데이터 파싱 (행 번호도 추적)
     const members: SheetMember[] = rows.slice(1).map((row, index) => ({
-      name: (row[0] || "").toString().trim(),
-      phone: (row[1] || "").toString().trim(),
+      userId: (row[userIdColIndex] || "").toString().trim(),
+      name: (row[nameColIndex] || "").toString().trim(),
+      phone: (row[phoneColIndex] || "").toString().trim(),
       rowIndex: index + 2, // 헤더 제외하고 실제 행 번호 (1-based + 헤더 1행)
-    })).filter(member => member.name && member.phone); // 이름과 연락처가 모두 있는 것만
+    })).filter(member => member.name); // 이름이 있는 것만 (연락처나 회원ID는 선택사항)
 
     console.log(`파싱된 회원 수: ${members.length}`);
     console.log("첫 3개 회원:", members.slice(0, 3));
@@ -156,15 +169,15 @@ export async function POST(req: Request) {
       console.log(`배치 ${batchIndex + 1}/${batches.length} 처리 시작 (${batch.length}명)`);
 
       for (const member of batch) {
-      console.log(`회원 검증 시작: ${member.name} (${member.phone})`);
+      console.log(`회원 검증 시작: ${member.name} (전화: ${member.phone}, ID: ${member.userId})`);
       try {
-        // Cafe24에서 회원 정보 조회 - 다양한 방법으로 검색
+        // Cafe24에서 회원 정보 조회
         let customer = null;
 
-        // 1. cellphone으로 검색 (하이픈 제거한 숫자만)
+        // 1. cellphone으로 먼저 검색 (하이픈 제거한 숫자만)
         const cleanPhone = member.phone.replace(/\D/g, "");
         if (cleanPhone) {
-          console.log(`cellphone으로 검색: ${cleanPhone}`);
+          console.log(`cellphone으로 1차 검색: ${cleanPhone}`);
           try {
             const cellphoneRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
               params: {
@@ -179,13 +192,10 @@ export async function POST(req: Request) {
 
             if (cellphoneRes.data.customers && cellphoneRes.data.customers.length > 0) {
               customer = cellphoneRes.data.customers[0];
-              console.log(`고객 정보 상세:`, {
+              console.log(`✅ 핸드폰으로 찾음:`, {
                 member_id: customer.member_id,
                 user_id: customer.user_id,
-                group_no: customer.group_no,
-                member_group_no: customer.member_group_no,
-                customer_group_no: customer.customer_group_no,
-                전체_고객정보: customer
+                group_no: customer.group_no
               });
             }
           } catch (error) {
@@ -193,7 +203,7 @@ export async function POST(req: Request) {
           }
         }
 
-        // 2. phone으로 검색 (원본 형태)
+        // 2. cellphone 안되면 phone으로 검색 (원본 형태)
         if (!customer && member.phone) {
           console.log(`phone으로 검색: ${member.phone}`);
           try {
@@ -210,32 +220,34 @@ export async function POST(req: Request) {
 
             if (phoneSearchRes.data.customers && phoneSearchRes.data.customers.length > 0) {
               customer = phoneSearchRes.data.customers[0];
+              console.log(`✅ 원본 전화번호로 찾음: ${customer.member_id}`);
             }
           } catch (error) {
             console.log(`phone 검색 실패: ${error instanceof Error ? error.message : String(error)}`);
           }
         }
 
-        // 3. 이름으로 검색
-        if (!customer && member.name) {
-          console.log(`이름으로 검색: ${member.name}`);
+        // 3. 핸드폰으로 못 찾았고 회원 ID가 있으면 member_id로 재검색
+        if (!customer && member.userId) {
+          console.log(`핸드폰으로 못 찾음 → member_id로 재시도: ${member.userId}`);
           try {
-            const nameSearchRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
+            const memberIdRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/customers`, {
               params: {
-                user_name: member.name,
+                member_id: member.userId,
                 limit: 10,
                 embed: "group"
               },
               headers: { Authorization: `Bearer ${access_token}` },
               timeout: 5000,
             });
-            console.log(`이름 검색 결과: ${nameSearchRes.data.customers?.length || 0}건`);
+            console.log(`member_id 검색 결과: ${memberIdRes.data.customers?.length || 0}건`);
 
-            if (nameSearchRes.data.customers && nameSearchRes.data.customers.length > 0) {
-              customer = nameSearchRes.data.customers[0];
+            if (memberIdRes.data.customers && memberIdRes.data.customers.length > 0) {
+              customer = memberIdRes.data.customers[0];
+              console.log(`✅ 회원 ID로 찾음: ${customer.member_id}`);
             }
           } catch (error) {
-            console.log(`이름 검색 실패: ${error instanceof Error ? error.message : String(error)}`);
+            console.log(`member_id 검색 실패: ${error instanceof Error ? error.message : String(error)}`);
           }
         }
 
@@ -248,64 +260,6 @@ export async function POST(req: Request) {
             isRegistered: false,
           });
           continue;
-        }
-
-        // API 문서 기준으로 수정: 필수 파라미터 추가
-        let totalOrders = 0;
-
-        try {
-          console.log(`API 문서 기준 주문 조회 시작: ${customer.member_id}`);
-
-          // 날짜 범위 설정 (필수 파라미터)
-          const endDate = new Date().toISOString().split('T')[0];
-          const startDate = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-
-          // API 문서 기준 필수 파라미터 포함
-          const ordersRes = await axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
-            params: {
-              member_id: customer.member_id,
-              start_date: startDate,  // 필수
-              end_date: endDate,      // 필수
-              shop_no: 1,            // 필수 (기본값)
-              limit: 100,
-              offset: 0
-            },
-            headers: { Authorization: `Bearer ${access_token}` },
-            timeout: 10000,
-          });
-
-          if (ordersRes.data.orders) {
-            // 완료된 주문만 집계 (N40: 배송완료, N50: 구매확정)
-            const completedOrders = ordersRes.data.orders.filter((order: { order_status?: string }) =>
-              order.order_status === "N40" || order.order_status === "N50"
-            );
-            totalOrders = completedOrders.length;
-            console.log(`API 문서 기준 성공: 전체 ${ordersRes.data.orders.length}건 중 완료 ${totalOrders}건`);
-          } else {
-            totalOrders = 0;
-          }
-
-        } catch (orderError) {
-          console.log(`API 문서 기준 실패, 대안 시도: ${orderError instanceof Error ? orderError.message : String(orderError)}`);
-
-          // 대안: 직접 /api/customer/info 호출 (검증된 방법)
-          try {
-            const userId = customer.member_id?.split("@")[0] || customer.member_id;
-            console.log(`대안: /api/customer/info 호출 (user_id: ${userId})`);
-
-            const infoRes = await axios.get(`${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/api/customer/info`, {
-              params: { user_id: userId },
-              timeout: 15000,
-            });
-
-            if (infoRes.status === 200) {
-              totalOrders = infoRes.data.totalOrders || 0;
-              console.log(`/api/customer/info 성공: ${totalOrders}건`);
-            }
-          } catch (infoError) {
-            console.log(`/api/customer/info도 실패: ${infoError instanceof Error ? infoError.message : String(infoError)}`);
-            totalOrders = 0;
-          }
         }
 
         // Lambda와 동일한 방식: group_no 필드 직접 사용
@@ -334,7 +288,6 @@ export async function POST(req: Request) {
             userName: customer.user_name || "",
             memberGrade: finalGroupNo ? parseInt(finalGroupNo.toString()) : 1, // customergroups API 결과 우선 사용
             joinDate: customer.created_date || "",
-            totalOrders, // 구매 건수
           },
         });
 
@@ -365,8 +318,8 @@ export async function POST(req: Request) {
 
     console.log(`모든 회원 검증 완료. 총 ${verificationResults.length}건`);
 
-    // 3. 검증 결과를 AC~AG열에 쓰기
-    // AC: 회원ID, AD: 가입여부, AE: 회원등급, AF: 가입일, AG: 총구매금액
+    // 3. 검증 결과를 AC~AF열에 쓰기
+    // AC: 가입여부, AD: 회원ID, AE: 회원등급, AF: 가입일
     console.log("스프레드시트에 결과 쓰기 시작");
 
     // 각 행별로 개별 업데이트 (행별로 다른 위치에 써야 하므로)
@@ -376,13 +329,12 @@ export async function POST(req: Request) {
         result.cafe24Data?.userId || "", // AD: 아이디
         result.cafe24Data?.memberGrade || "", // AE: 등급
         result.cafe24Data?.joinDate ? result.cafe24Data.joinDate.split('T')[0] : "", // AF: 가입날짜 (YYYY-MM-DD)
-        result.cafe24Data?.totalOrders || 0, // AG: 구매건수
       ];
 
-      // 각 행의 AC~AG 범위에 데이터 쓰기
+      // 각 행의 AC~AF 범위에 데이터 쓰기
       return sheets.spreadsheets.values.update({
         spreadsheetId,
-        range: `${sheetName}!AC${result.rowIndex}:AG${result.rowIndex}`,
+        range: `${sheetName}!AC${result.rowIndex}:AF${result.rowIndex}`,
         valueInputOption: 'USER_ENTERED',
         requestBody: {
           values: [rowData],
@@ -414,7 +366,7 @@ export async function POST(req: Request) {
         unregistered: unregisteredCount,
         errors: errorCount,
       },
-      message: `검증 완료: 총 ${verificationResults.length}명 중 가입 ${registeredCount}명, 미가입 ${unregisteredCount}명 (AC~AG열에 저장됨)`,
+      message: `검증 완료: 총 ${verificationResults.length}명 중 가입 ${registeredCount}명, 미가입 ${unregisteredCount}명 (AC~AF열에 저장됨)`,
     });
 
   } catch (error) {

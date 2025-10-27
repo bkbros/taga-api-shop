@@ -40,6 +40,11 @@ export default function SheetsVerification() {
   const [sheetName, setSheetName] = useState("Smore-5pURyYjo8l-HRG");
   const [shopNo, setShopNo] = useState<number>(1);
 
+  // 스프레드시트 컬럼 설정
+  const [nameColumn, setNameColumn] = useState("I");
+  const [phoneColumn, setPhoneColumn] = useState("J");
+  const [userIdColumn, setUserIdColumn] = useState("H");
+
   const [serviceAccountKey, setServiceAccountKey] = useState("");
   const [useEnvCredentials, setUseEnvCredentials] = useState(true);
 
@@ -83,6 +88,9 @@ export default function SheetsVerification() {
           startRow: cursorStartRow,
           limit,
           concurrency,
+          nameColumn,
+          phoneColumn,
+          userIdColumn,
         }),
       });
 
@@ -101,7 +109,7 @@ export default function SheetsVerification() {
       const data = (await res.json()) as BatchResponse;
       return data;
     },
-    [spreadsheetId, sheetName, useEnvCredentials, serviceAccountKey, shopNo, limit, concurrency],
+    [spreadsheetId, sheetName, useEnvCredentials, serviceAccountKey, shopNo, limit, concurrency, nameColumn, phoneColumn, userIdColumn],
   );
 
   const handleRunAll = useCallback(async () => {
@@ -199,7 +207,7 @@ export default function SheetsVerification() {
           <p className="text-xs text-gray-500 mt-1">URL에서 /d/ 다음 부분만 입력하세요</p>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">시트 이름</label>
             <input
@@ -220,6 +228,49 @@ export default function SheetsVerification() {
               min={1}
             />
           </div>
+        </div>
+
+        {/* 스프레드시트 컬럼 설정 */}
+        <div className="p-4 bg-blue-50 border border-blue-200 rounded-md">
+          <h3 className="text-sm font-semibold text-blue-900 mb-3">📋 스프레드시트 컬럼 설정</h3>
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">이름 열</label>
+              <input
+                type="text"
+                value={nameColumn}
+                onChange={e => setNameColumn(e.target.value.toUpperCase())}
+                placeholder="I"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-center font-mono"
+                maxLength={2}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">연락처 열</label>
+              <input
+                type="text"
+                value={phoneColumn}
+                onChange={e => setPhoneColumn(e.target.value.toUpperCase())}
+                placeholder="J"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-center font-mono"
+                maxLength={2}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">회원 ID 열</label>
+              <input
+                type="text"
+                value={userIdColumn}
+                onChange={e => setUserIdColumn(e.target.value.toUpperCase())}
+                placeholder="H"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-center font-mono"
+                maxLength={2}
+              />
+            </div>
+          </div>
+          <p className="text-xs text-gray-600 mt-2">
+            연락처가 없으면 회원 ID로 검색합니다
+          </p>
         </div>
 
         <div className="rounded-md border p-3">
