@@ -509,10 +509,10 @@ export async function POST(req: Request) {
     // 읽기 범위
     const endRow = startRow + limit - 1;
 
-    // I:J + AC 함께 읽기
-    const [inRes, idRes] = await Promise.all([
+    // H, I:J 함께 읽기 (H: 회원ID, I: 이름, J: 전화번호)
+    const [idRes, inRes] = await Promise.all([
+      sheets.spreadsheets.values.get({ spreadsheetId, range: `${targetSheet}!H${startRow}:H${endRow}` }),
       sheets.spreadsheets.values.get({ spreadsheetId, range: `${targetSheet}!I${startRow}:J${endRow}` }),
-      sheets.spreadsheets.values.get({ spreadsheetId, range: `${targetSheet}!AC${startRow}:AC${endRow}` }),
     ]);
     const inRows = inRes.data.values ?? [];
     const idRows = idRes.data.values ?? [];
