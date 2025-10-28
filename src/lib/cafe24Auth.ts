@@ -34,21 +34,37 @@ async function refreshAccessToken(): Promise<{ token: string; expiresAtMs: numbe
   form.set("client_id", clientId);
   form.set("client_secret", clientSecret);
 
-  const resp: AxiosResponse<TokenResponse> = await axios.post(url, form, {
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    timeout: 20_000,
-  });
+  try {
+    const resp: AxiosResponse<TokenResponse> = await axios.post(url, form, {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      timeout: 20_000,
+    });
 
-  const { access_token, expires_in, refresh_token: newRefresh } = resp.data;
-  const expiresAtMs = Date.now() + Math.max(0, (expires_in - EXPIRY_SKEW_SEC) * 1000);
+    const { access_token, expires_in, refresh_token: newRefresh } = resp.data;
+    const expiresAtMs = Date.now() + Math.max(0, (expires_in - EXPIRY_SKEW_SEC) * 1000);
 
-  await Promise.all([
-    saveParam("access_token", access_token),
-    saveParam("access_token_expires_at", String(expiresAtMs)),
-    ...(newRefresh ? [saveParam("refresh_token", newRefresh)] : []),
-  ]);
+    await Promise.all([
+      saveParam("access_token", access_token),
+      saveParam("access_token_expires_at", String(expiresAtMs)),
+      ...(newRefresh ? [saveParam("refresh_token", newRefresh)] : []),
+    ]);
 
-  return { token: access_token, expiresAtMs };
+    console.log('[AUTH] ✓ Token refreshed successfully');
+    return { token: access_token, expiresAtMs };
+  } catch (error) {
+    if (axios.isAxiosError(error) && error.response?.status === 401) {
+      console.error('[AUTH] ❌ Refresh token expired or invalid!');
+      console.error('[AUTH] Cafe24 response:', {
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        data: error.response?.data,
+        headers: error.response?.headers,
+      });
+      throw new Error('REFRESH_TOKEN_EXPIRED: Please log in again via OAuth');
+    }
+    console.error('[AUTH] ❌ Unexpected error during refresh:', error);
+    throw error;
+  }
 }
 
 /** 만료 전이면 기존 토큰, 아니면 자동으로 새로 받아서 리턴 */

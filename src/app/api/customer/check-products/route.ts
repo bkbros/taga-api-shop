@@ -468,6 +468,19 @@ export async function GET(req: Request) {
     const processingTime = Date.now() - startT;
     console.error(`[ERROR] check-products failed after ${processingTime}ms`, error);
 
+    // refresh_token 만료 에러 감지
+    if (error instanceof Error && error.message.includes('REFRESH_TOKEN_EXPIRED')) {
+      return NextResponse.json(
+        {
+          error: "SESSION_EXPIRED",
+          message: "로그인 세션이 만료되었습니다. 다시 로그인해주세요.",
+          redirectTo: "/",
+          processingTime,
+        },
+        { status: 401 }
+      );
+    }
+
     if (axios.isAxiosError(error)) {
       const st = error.response?.status;
       const data = error.response?.data;
