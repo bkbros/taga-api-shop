@@ -1,7 +1,7 @@
 // src/app/api/customer/check-products/route.ts
 import { NextResponse } from "next/server";
 import axios from "axios";
-import { getAccessToken } from "@/lib/cafe24Auth";
+import { getAccessToken, forceRefresh } from "@/lib/cafe24Auth";
 
 /* -------------------- 타입 -------------------- */
 type Cafe24OrderItem = {
@@ -133,7 +133,17 @@ class RateLimiter {
 
 const limiter = new RateLimiter(2, 300);
 
-async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, baseDelay = 1000): Promise<T> {
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  options?: {
+    maxRetries?: number;
+    baseDelay?: number;
+    onTokenRefresh?: () => Promise<void>;
+  }
+): Promise<T> {
+  const maxRetries = options?.maxRetries ?? 3;
+  const baseDelay = options?.baseDelay ?? 1000;
+
   let lastErr: unknown;
   for (let i = 0; i <= maxRetries; i++) {
     try {
@@ -142,9 +152,33 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, baseDelay = 10
       lastErr = e;
       if (axios.isAxiosError(e)) {
         const st = e.response?.status ?? 0;
+
+        // 401 Unauthorized → 토큰 만료, 강제 갱신 후 재시도
+        if (st === 401 && i < maxRetries) {
+          console.log('[AUTH] 401 Unauthorized detected, forcing token refresh...');
+          try {
+            const newToken = await forceRefresh();
+            console.log('[AUTH] Token refreshed successfully:', newToken.slice(0, 10) + '...');
+
+            // 콜백으로 토큰 업데이트 알림
+            if (options?.onTokenRefresh) {
+              await options.onTokenRefresh();
+            }
+
+            await new Promise(r => setTimeout(r, 1000)); // 1초 대기 후 재시도
+            continue;
+          } catch (refreshErr) {
+            console.error('[AUTH] Failed to refresh token:', refreshErr);
+            // refresh 실패 시 바로 에러 throw
+            throw e;
+          }
+        }
+
+        // 429 Rate Limit or 500대 서버 에러 → exponential backoff 재시도
         if ((st === 429 || st >= 500) && i < maxRetries) {
           const jitter = Math.floor(Math.random() * 300);
           const delay = baseDelay * Math.pow(2, i) + jitter;
+          console.log(`[RETRY] Status ${st}, retrying in ${delay}ms (attempt ${i + 1}/${maxRetries})`);
           await new Promise(r => setTimeout(r, delay));
           continue;
         }
@@ -206,15 +240,22 @@ export async function GET(req: Request) {
     console.log(`[CHECK-PRODUCTS] member_id=${memberId}, products=${productNos.length > 0 ? productNos.join(",") : "전체"}, period=${fmtKST(startDate)}~${fmtKST(endDate)}`);
 
     // 토큰 자동 갱신 포함 로드
-    const access_token = await getAccessToken();
+    let access_token = await getAccessToken();
     const mallId = process.env.NEXT_PUBLIC_CAFE24_MALL_ID;
     if (!mallId) {
       return NextResponse.json({ error: "Missing NEXT_PUBLIC_CAFE24_MALL_ID" }, { status: 500 });
     }
 
-    const authHeaders: Record<string, string> = {
+    // authHeaders를 동적으로 생성하는 함수
+    const getAuthHeaders = () => ({
       Authorization: `Bearer ${access_token}`,
       "X-Cafe24-Api-Version": "2025-06-01",
+    });
+
+    // 토큰 갱신 시 access_token 업데이트
+    const onTokenRefresh = async () => {
+      access_token = await getAccessToken();
+      console.log('[AUTH] Updated access_token in request context');
     };
 
     // 주문 조회 (3개월 윈도우로 분할)
@@ -253,12 +294,14 @@ export async function GET(req: Request) {
           params.order_status = orderStatus;
         }
 
-        const resp = await withRetry(() =>
-          axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
-            headers: authHeaders,
-            params,
-            timeout: 15000,
-          })
+        const resp = await withRetry(
+          () =>
+            axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders`, {
+              headers: getAuthHeaders(),
+              params,
+              timeout: 15000,
+            }),
+          { onTokenRefresh }
         );
 
         const batch: Cafe24Order[] = resp.data?.orders ?? [];
@@ -266,12 +309,14 @@ export async function GET(req: Request) {
         // 각 주문에 대해 상세 정보 조회하여 정확한 금액 가져오기
         for (const order of batch) {
           try {
-            const detailResp = await withRetry(() =>
-              axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders/${order.order_id}`, {
-                headers: authHeaders,
-                params: { shop_no: shopNo },
-                timeout: 10000,
-              })
+            const detailResp = await withRetry(
+              () =>
+                axios.get(`https://${mallId}.cafe24api.com/api/v2/admin/orders/${order.order_id}`, {
+                  headers: getAuthHeaders(),
+                  params: { shop_no: shopNo },
+                  timeout: 10000,
+                }),
+              { onTokenRefresh }
             );
 
             const detailOrder = detailResp.data?.order;
